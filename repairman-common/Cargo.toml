@@ -1,0 +1,19 @@
+[package]
+name = "repairman-common"
+version.workspace = true
+edition.workspace = true
+description = "Shared logic and types for the Repairman project."
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+file-hashing.workspace = true
+blake2.workspace = true
+digest.workspace = true
+flate2.workspace = true
+miniz_oxide.workspace = true
+crc32fast.workspace = true
+
+[lints]
+workspace = true

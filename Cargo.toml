@@ -1,0 +1,29 @@
+[workspace]
+resolver = "3"
+members = ["repairman-client","repairman-common","repairman-server"]
+
+[workspace.package]
+version = "1.0.0"
+edition = "2024"
+description = "A simple file hosting server and a client."
+authors = ["hansjkla"]
+license = "MIT"
+repository = "https://github.com/hansjkla/repairman"
+
+[workspace.dependencies]
+file-hashing = "0.1.2"
+blake2 = "0.10"
+digest = "0.10"
+flate2 = "=1.1.5"
+miniz_oxide = "=0.8.9"
+crc32fast = "=1.5.0"
+repairman-common = { path = "./repairman-common" }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_abi = "warn"
+
+[profile.release]
+lto = "thin"
+strip = "symbols"
+codegen-units = 1
