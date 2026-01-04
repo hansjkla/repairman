@@ -14,26 +14,23 @@ use flate2::write::ZlibDecoder;
 use repairman_common::*;
 
 
-pub fn start_communication(server: &str) -> std::io::Result<()> {
-    let stream = TcpStream::connect(server)?;
+pub fn start_communication(server: &str, origin_path: &str) -> std::io::Result<()> {
+    let stream = TcpStream::connect(format!("{server}:6767"))?;
     let mut file_list = Vec::new();
 
     request_hashes(&stream)?;
 
-    let response = match parse_request(&stream) {
-        Ok(r) => r,
-        Err(_) => return Err(io::Error::new(io::ErrorKind::Other, "Couldn't parse GET-HASHES response.")),
-    };
+    let response = parse_request(&stream)?;
 
     if response.get_type() != &RequestType::GiveHashes {
-        return Err(io::Error::new(io::ErrorKind::Other, "Response isn't file hashes."));
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "Response isn't file hashes."));
     }
 
 
     if let Some(body) = response.get_body() {
         let body = match str::from_utf8(body) {
             Ok(b) => b,
-            Err(_) => return Err(io::Error::new(io::ErrorKind::Other, "Couldn't turn response body into string.")),
+            Err(_) => return Err(io::Error::new(io::ErrorKind::InvalidData, "Couldn't turn response body into string.")),
         };
 
         let lines = body.lines();
@@ -43,21 +40,21 @@ pub fn start_communication(server: &str) -> std::io::Result<()> {
             
             let path = match part.next() {
                 Some(p) => p,
-                None => return Err(io::Error::new(io::ErrorKind::Other, "Responses body contains invalid path.")),
+                None => return Err(io::Error::new(io::ErrorKind::InvalidData, "Responses body contains invalid path.")),
             };
 
             let hash = match part.next() {
                 Some(h) => h,
-                None => return Err(io::Error::new(io::ErrorKind::Other, "Responses body contains invalid hash.")),
+                None => return Err(io::Error::new(io::ErrorKind::InvalidData, "Responses body contains invalid hash.")),
             };
 
             file_list.push(HashedFile::new(path, hash));
         }
     }
 
-    let checked_files = match check_files(&Path::new("test"), &file_list) {
+    let checked_files = match check_files(Path::new(origin_path), &file_list) {
         Some(v) => v,
-        None => return Err(io::Error::new(io::ErrorKind::Other, "Error checking the files against hashes.")),
+        None => return Err(io::Error::new(io::ErrorKind::InvalidData, "Error checking the files against hashes.")),
     };
 
     for file in &checked_files {
@@ -77,15 +74,14 @@ pub fn start_communication(server: &str) -> std::io::Result<()> {
         }).collect();
 
     for _ in 0..to_download_total.len()  {
-        let response = match parse_request(&stream) {
-            Ok(r) => r,
-            Err(_) => return Err(io::Error::new(io::ErrorKind::Other, "Couldn't parse GET-FILES response.")),
-        };
+        let response = parse_request(&stream)?;
 
         recieved_files.push(response);
     }
 
-    println!("{}", recieved_files.len());
+    if !Path::new(origin_path).exists() {
+        fs::create_dir(origin_path)?;
+    }
 
     for file in recieved_files {
         if file.get_type() != &RequestType::GiveFiles {
@@ -98,10 +94,8 @@ pub fn start_communication(server: &str) -> std::io::Result<()> {
 
         let file_name = match String::from_utf8(file_name.to_vec()) {
             Ok(s) => s,
-            Err(_) => return Err(io::Error::new(io::ErrorKind::Other, "Couldn't convert name from file request body to string.")),
+            Err(_) => return Err(io::Error::new(io::ErrorKind::InvalidData, "Couldn't convert name from file request body to string.")),
         };
-
-        println!("File: {file_name}");
 
         let mut writer = Vec::new();
         let mut z = ZlibDecoder::new(writer);
@@ -109,9 +103,13 @@ pub fn start_communication(server: &str) -> std::io::Result<()> {
         writer = z.finish()?;
         let return_string = String::from_utf8(writer).expect("String parsing error");
 
-        let path = Path::new("test");
+        let path = Path::new(origin_path).join(file_name);
 
-        let path = path.join(file_name);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        } else {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "Path of one object doesn't have a parent."));
+        }
         
         fs::write(path, return_string)?;
     }
@@ -132,6 +130,14 @@ fn request_hashes(mut stream: &TcpStream) -> std::io::Result<()> {
 fn check_files<'a>(path: &Path, files: &'a [HashedFile]) -> Option<Vec<(&'a HashedFile, FileState)>> {
     let mut list: Vec<(&HashedFile, FileState)> = Vec::with_capacity(files.len());
 
+    if !path.exists() {
+        let list:Vec<(&HashedFile, FileState)> = files.iter().map(|f| {
+            (f, FileState::Missing)
+        }).collect();
+
+        return Some(list);
+    }
+
     if path.is_dir() {
         for entry in files {
             let full_path = path.join(entry.get_path());
@@ -147,9 +153,6 @@ fn check_files<'a>(path: &Path, files: &'a [HashedFile]) -> Option<Vec<(&'a Hash
                 Ok(r) => r,
                 Err(_) => return None,
             };
-
-            println!("{}", entry.get_hash());
-            println!("File hash: {}", file_hash);
 
             if file_hash == entry.get_hash() {
                 list.push((entry, FileState::Present));
@@ -181,8 +184,6 @@ fn request_files(mut stream: &TcpStream, checked_files: &[(&HashedFile, FileStat
 
     let body_size = body.len() as u32;
     let header = create_header(RequestVersion::ZEROpOne, RequestType::GetFiles, 0, body_size);
-
-    println!("body size: {}", body_size);
 
     stream.write_all(&header)?;
     stream.write_all(body.as_bytes())?;

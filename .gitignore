@@ -1,2 +1,20 @@
-/target
+# --- Rust ---
+/target/
 **/*.rs.bk
+
+# --- IDEs ---
+.vscode/
+.idea/
+*.iml
+*.sublime-project
+*.sublime-workspace
+
+# --- Operating Systems ---
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# --- Environment / Secrets ---
+.env
+.env.local
+*.log

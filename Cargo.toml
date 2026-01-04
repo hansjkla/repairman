@@ -3,7 +3,7 @@ resolver = "3"
 members = ["repairman-client","repairman-common","repairman-server"]
 
 [workspace.package]
-version = "1.0.0"
+version = "0.1.0"
 edition = "2024"
 description = "A simple file hosting server and a client."
 authors = ["hansjkla"]

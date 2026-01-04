@@ -22,6 +22,10 @@ pub fn get_file_hashes(dir: &Path) -> Result<Vec<HashedFile>, io::Error> {
             );
     }
 
+    if buffer.is_empty() {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "Directory is empty."));
+    }
+
     Ok(buffer)
 }
 

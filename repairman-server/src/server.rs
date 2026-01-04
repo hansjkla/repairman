@@ -9,8 +9,8 @@ use flate2::write::ZlibEncoder;
 
 use repairman_common::*;
 
-pub fn run_server(files: &[HashedFile]) -> std::io::Result<()> {
-    let listener = TcpListener::bind("127.0.0.1:6767")?;
+pub fn run_server(files: &[HashedFile], addr: &str) -> std::io::Result<()> {
+    let listener = TcpListener::bind(addr)?;
 
     for stream in listener.incoming() {
         let stream = stream?;
@@ -25,12 +25,7 @@ pub fn run_server(files: &[HashedFile]) -> std::io::Result<()> {
 
 fn handle_connection(mut stream: TcpStream, files: &[HashedFile]) -> std::io::Result<()> {
     loop {
-        let request = match parse_request(&stream) {
-            Ok(r) => r,
-            Err(_) => return Err(io::Error::new(io::ErrorKind::Other, "Couldn't parse request.")),
-        };
-
-        println!("Got this request:\n{}", request);
+        let request = parse_request(&stream)?;
 
         match request.get_type() {
             RequestType::GetHashes => {
@@ -49,7 +44,7 @@ fn handle_connection(mut stream: TcpStream, files: &[HashedFile]) -> std::io::Re
                 let files = request.get_body().as_ref().unwrap();
                 let files = match str::from_utf8(files) {
                     Ok(f) => f,
-                    Err(_) => return Err(io::Error::new(io::ErrorKind::Other, "Couldn't convert body to string.")),
+                    Err(_) => return Err(io::Error::new(io::ErrorKind::InvalidData, "Couldn't convert body to string.")),
                 };
                 let files: Vec<&str> = files.lines().collect();
 
@@ -72,7 +67,7 @@ fn handle_connection(mut stream: TcpStream, files: &[HashedFile]) -> std::io::Re
 
                 break;
             },
-            _ => return Err(io::Error::new(io::ErrorKind::Other, "Got an invalid request type.")),
+            _ => return Err(io::Error::new(io::ErrorKind::InvalidData, "Got an invalid request type.")),
         }
     }
 
