@@ -77,9 +77,9 @@ fn handle_connection(mut stream: TcpStream, files: &[HashedFile]) -> std::io::Re
 fn compress_file(path: &str) -> io::Result<Vec<u8>> {
     let mut encoder = ZlibEncoder::new(Vec::new(), Compression::default());
 
-    let content = fs::read_to_string(path)?;
+    let content = fs::read(path)?;
 
-    encoder.write_all(content.as_bytes())?;
+    encoder.write_all(&content)?;
     
 
     let result = encoder.finish()?;

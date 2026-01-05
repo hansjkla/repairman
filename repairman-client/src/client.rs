@@ -1,8 +1,13 @@
 use std::{
     fs,
     io::{self, Write},
-    net::TcpStream,
-    path::Path,
+    path::Path, sync::Arc,
+};
+
+use tokio::{
+    net::*,
+    io::AsyncWriteExt,
+    sync::mpsc,
 };
 
 
@@ -14,13 +19,13 @@ use flate2::write::ZlibDecoder;
 use repairman_common::*;
 
 
-pub fn start_communication(server: &str, origin_path: &str) -> std::io::Result<()> {
-    let stream = TcpStream::connect(format!("{server}:6767"))?;
+pub async fn start_communication(server: &str, origin_path: &str) -> std::io::Result<()> {
+    let mut stream = tokio::net::TcpStream::connect(format!("{server}:6767")).await?;
     let mut file_list = Vec::new();
 
-    request_hashes(&stream)?;
+    request_hashes(&mut stream).await?;
 
-    let response = parse_request(&stream)?;
+    let response = async_parse_request(&mut stream).await?;
 
     if response.get_type() != &RequestType::GiveHashes {
         return Err(io::Error::new(io::ErrorKind::InvalidData, "Response isn't file hashes."));
@@ -61,9 +66,7 @@ pub fn start_communication(server: &str, origin_path: &str) -> std::io::Result<(
         println!("{}  {}", file.0.get_path(), file.1);
     }
     
-    request_files(&stream, &checked_files)?;
-
-    let mut recieved_files: Vec<Request> = Vec::with_capacity(checked_files.len());
+    request_files(&mut stream, &checked_files).await?;
 
     let to_download_total:Vec<&(&HashedFile, FileState)> = checked_files.iter()
         .filter(|f| {
@@ -73,55 +76,79 @@ pub fn start_communication(server: &str, origin_path: &str) -> std::io::Result<(
             false
         }).collect();
 
-    for _ in 0..to_download_total.len()  {
-        let response = parse_request(&stream)?;
-
-        recieved_files.push(response);
-    }
-
     if !Path::new(origin_path).exists() {
         fs::create_dir(origin_path)?;
     }
 
-    for file in recieved_files {
-        if file.get_type() != &RequestType::GiveFiles {
-            continue;
+    let (tx, mut rx) = mpsc::channel::<Request>(100);
+
+    let origin = Arc::new(origin_path.to_string());
+
+    let unpacker_handle = tokio::spawn(async move {
+        while let Some(file) = rx.recv().await {
+            if file.get_type() != &RequestType::GiveFiles {
+                continue;
+            }
+
+            let origin_path = Arc::clone(&origin);
+            
+            tokio::task::spawn_blocking(move || {
+                let result: io::Result<()> = (|| {
+                    let body = file.get_body().as_ref().unwrap();
+
+                    let (file_name, compressed_file) = body.split_at(file.get_file_name_size().unwrap());
+
+                    let file_name = match String::from_utf8(file_name.to_vec()) {
+                        Ok(s) => s,
+                        Err(_) => return Err(io::Error::new(io::ErrorKind::InvalidData, "Couldn't convert name from file request body to string.")),
+                    };
+
+                    let mut writer = Vec::new();
+                    let mut z = ZlibDecoder::new(writer);
+                    z.write_all(compressed_file)?;
+                    writer = z.finish()?;
+
+                    let path = Path::new(origin_path.as_str()).join(file_name);
+
+                    if let Some(parent) = path.parent() {
+                        fs::create_dir_all(parent)?;
+                    } else {
+                        return Err(io::Error::new(io::ErrorKind::InvalidData, "Path of one object doesn't have a parent."));
+                    }
+                    
+                    fs::write(&path, writer)?;
+
+                    Ok(())
+                })();
+
+                if let Err(e) = result {
+                    eprintln!("Error unpacking a file: {e}");
+                }
+            });
         }
+    });
 
-        let body = file.get_body().as_ref().unwrap();
 
-        let (file_name, compressed_file) = body.split_at(file.get_file_name_size().unwrap());
+    for _ in 0..to_download_total.len()  {
+        let response = async_parse_request(&mut stream).await?;
 
-        let file_name = match String::from_utf8(file_name.to_vec()) {
-            Ok(s) => s,
-            Err(_) => return Err(io::Error::new(io::ErrorKind::InvalidData, "Couldn't convert name from file request body to string.")),
-        };
-
-        let mut writer = Vec::new();
-        let mut z = ZlibDecoder::new(writer);
-        z.write_all(compressed_file)?;
-        writer = z.finish()?;
-        let return_string = String::from_utf8(writer).expect("String parsing error");
-
-        let path = Path::new(origin_path).join(file_name);
-
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
-        } else {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, "Path of one object doesn't have a parent."));
+        match tx.send(response).await {
+            Ok(_) => (),
+            Err(err) => eprintln!("Error passing a file request to the unpacking task: {}", err),
         }
-        
-        fs::write(path, return_string)?;
     }
-    
+
+    drop(tx);
+
+    unpacker_handle.await?;
 
     Ok(())
 }
 
-fn request_hashes(mut stream: &TcpStream) -> std::io::Result<()> {
+async fn request_hashes(stream: &mut TcpStream) -> std::io::Result<()> {
     let header = create_header(RequestVersion::ZEROpOne, RequestType::GetHashes, 0, 0);
 
-    stream.write_all(&header)?;
+    stream.write_all(&header).await?;
 
     Ok(())
 }
@@ -169,7 +196,7 @@ fn check_files<'a>(path: &Path, files: &'a [HashedFile]) -> Option<Vec<(&'a Hash
     None
 }
 
-fn request_files(mut stream: &TcpStream, checked_files: &[(&HashedFile, FileState)]) -> std::io::Result<()> {
+async fn request_files(stream: &mut TcpStream, checked_files: &[(&HashedFile, FileState)]) -> std::io::Result<()> {
     let body: String = checked_files.iter()
         .filter(|f| {
             if f.1 != FileState::Present {
@@ -185,8 +212,8 @@ fn request_files(mut stream: &TcpStream, checked_files: &[(&HashedFile, FileStat
     let body_size = body.len() as u32;
     let header = create_header(RequestVersion::ZEROpOne, RequestType::GetFiles, 0, body_size);
 
-    stream.write_all(&header)?;
-    stream.write_all(body.as_bytes())?;
+    stream.write_all(&header).await?;
+    stream.write_all(body.as_bytes()).await?;
 
     Ok(())
 }

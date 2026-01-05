@@ -1,6 +1,5 @@
 use std::{env, path::Path};
 
-// use hashed_files::get_file_hashes;
 use server::run_server;
 
 use hashed_files::par_hash;

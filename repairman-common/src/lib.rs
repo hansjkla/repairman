@@ -192,3 +192,53 @@ pub fn parse_request(mut stream: &std::net::TcpStream) -> std::io::Result<Reques
 
     Ok(Request::new(version, request_type, Some(file_name_size), Some(body)))
 }
+
+pub async fn async_parse_request(stream: &mut tokio::net::TcpStream) -> std::io::Result<Request> {
+    use tokio::io::AsyncReadExt;
+
+    let mut header = [0u8; 64];
+    stream.read_exact(&mut header).await?;
+
+    let body_size = u32::from_be_bytes(header[60..64].try_into().map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidData, "Couldn't read out body size from header."))?) as usize;
+    let file_name_size = u32::from_be_bytes(header[56..60].try_into().map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidData, "Couldn't read out file name size from header."))?) as usize;
+
+    let request_line = String::from_utf8_lossy(&header[0..56]);
+    let request_line = request_line.trim_matches(char::from(0));
+
+    let mut sperate = request_line.split(" ");
+
+    if let Some(name) = sperate.next() {
+        if name != "repairman" {
+            return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "Protocol name invalid."));
+        }
+    } else {
+        return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "Header is empty."));
+    }
+
+    let version = match sperate.next() {
+        Some("0.1") => RequestVersion::ZEROpOne,
+        _ => return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "Version in header is wrong.")),
+    };
+
+    let request_type = match sperate.next() {
+        Some(t) => {
+            match t {
+                "GIVE-HASHES" => RequestType::GiveHashes,
+                "GIVE-FILES" => RequestType::GiveFiles,
+                "GET-HASHES" => return Ok(Request::new(version, RequestType::GetHashes, None, None)),
+                "GET-FILES" => RequestType::GetFiles,
+                _ => return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid request type was recieved.")),
+            }
+        }
+        None => return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "Header incomplete, request type wasn't recieved.")),
+    };
+
+    let mut body = vec![0u8; body_size];
+    stream.read_exact(&mut body).await?;
+
+    if request_type == RequestType::GiveHashes {
+        return Ok(Request::new(version, request_type, None, Some(body)));
+    }
+
+    Ok(Request::new(version, request_type, Some(file_name_size), Some(body)))
+}
