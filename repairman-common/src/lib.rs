@@ -192,14 +192,3 @@ pub fn parse_request(mut stream: &std::net::TcpStream) -> std::io::Result<Reques
 
     Ok(Request::new(version, request_type, Some(file_name_size), Some(body)))
 }
-
-
-#[cfg(test)]
-mod tests {
-    // use super::*;
-
-    #[test]
-    fn it_works() {
-        
-    }
-}

@@ -1,7 +1,9 @@
 use std::{env, path::Path};
 
-use hashed_files::get_file_hashes;
+// use hashed_files::get_file_hashes;
 use server::run_server;
+
+use hashed_files::par_hash;
 
 mod hashed_files;
 mod server;
@@ -18,7 +20,7 @@ fn main() {
     }
 
 
-    let list = match get_file_hashes(Path::new(&args[1])) {
+    let list = match par_hash(Path::new(&args[1])) {
         Ok(w) => w,
         Err(err) => {
             eprintln!("Error getting file hashes: {}", err);

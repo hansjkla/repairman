@@ -447,6 +447,7 @@ dependencies = [
  "file-hashing",
  "flate2",
  "miniz_oxide",
+ "rayon",
  "repairman-common",
 ]
 
@@ -460,6 +461,7 @@ dependencies = [
  "file-hashing",
  "flate2",
  "miniz_oxide",
+ "rayon",
 ]
 
 [[package]]
@@ -472,6 +474,7 @@ dependencies = [
  "file-hashing",
  "flate2",
  "miniz_oxide",
+ "rayon",
  "repairman-common",
 ]
 

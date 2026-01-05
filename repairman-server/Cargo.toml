@@ -14,6 +14,7 @@ digest.workspace = true
 flate2.workspace = true
 miniz_oxide.workspace = true
 crc32fast.workspace = true
+rayon.workspace = true
 repairman-common.workspace = true
 
 [lints]
