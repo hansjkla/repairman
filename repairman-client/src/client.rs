@@ -4,6 +4,8 @@ use std::{
     path::Path, sync::Arc,
 };
 
+use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
+
 use tokio::{
     net::*,
     io::AsyncWriteExt,
@@ -68,7 +70,7 @@ pub async fn start_communication(server: &str, origin_path: &str) -> std::io::Re
     
     request_files(&mut stream, &checked_files).await?;
 
-    let to_download_total:Vec<&(&HashedFile, FileState)> = checked_files.iter()
+    let to_download_total:Vec<&(&HashedFile, FileState)> = checked_files.par_iter()
         .filter(|f| {
             if f.1 != FileState::Present {
                 return true;
@@ -80,7 +82,7 @@ pub async fn start_communication(server: &str, origin_path: &str) -> std::io::Re
         fs::create_dir(origin_path)?;
     }
 
-    let (tx, mut rx) = mpsc::channel::<Request>(100);
+    let (tx, mut rx) = mpsc::channel::<Arc<Request>>(100);
 
     let origin = Arc::new(origin_path.to_string());
 
@@ -98,15 +100,10 @@ pub async fn start_communication(server: &str, origin_path: &str) -> std::io::Re
 
                     let (file_name, compressed_file) = body.split_at(file.get_file_name_size().unwrap());
 
-                    let file_name = match String::from_utf8(file_name.to_vec()) {
+                    let file_name = match str::from_utf8(file_name) {
                         Ok(s) => s,
                         Err(_) => return Err(io::Error::new(io::ErrorKind::InvalidData, "Couldn't convert name from file request body to string.")),
                     };
-
-                    let mut writer = Vec::new();
-                    let mut z = ZlibDecoder::new(writer);
-                    z.write_all(compressed_file)?;
-                    writer = z.finish()?;
 
                     let path = Path::new(origin_path.as_str()).join(file_name);
 
@@ -115,8 +112,11 @@ pub async fn start_communication(server: &str, origin_path: &str) -> std::io::Re
                     } else {
                         return Err(io::Error::new(io::ErrorKind::InvalidData, "Path of one object doesn't have a parent."));
                     }
-                    
-                    fs::write(&path, writer)?;
+
+                    let output_file = fs::File::create(&path)?;
+                    let mut z = ZlibDecoder::new(output_file);
+                    z.write_all(compressed_file)?;
+                    z.finish()?;
 
                     Ok(())
                 })();
@@ -130,9 +130,9 @@ pub async fn start_communication(server: &str, origin_path: &str) -> std::io::Re
 
 
     for _ in 0..to_download_total.len()  {
-        let response = async_parse_request(&mut stream).await?;
+        let response = Arc::new(async_parse_request(&mut stream).await?);
 
-        match tx.send(response).await {
+        match tx.send(Arc::clone(&response)).await {
             Ok(_) => (),
             Err(err) => eprintln!("Error passing a file request to the unpacking task: {}", err),
         }
@@ -155,10 +155,8 @@ async fn request_hashes(stream: &mut TcpStream) -> std::io::Result<()> {
 
 
 fn check_files<'a>(path: &Path, files: &'a [HashedFile]) -> Option<Vec<(&'a HashedFile, FileState)>> {
-    let mut list: Vec<(&HashedFile, FileState)> = Vec::with_capacity(files.len());
-
     if !path.exists() {
-        let list:Vec<(&HashedFile, FileState)> = files.iter().map(|f| {
+        let list:Vec<(&HashedFile, FileState)> = files.par_iter().map(|f| {
             (f, FileState::Missing)
         }).collect();
 
@@ -166,30 +164,29 @@ fn check_files<'a>(path: &Path, files: &'a [HashedFile]) -> Option<Vec<(&'a Hash
     }
 
     if path.is_dir() {
-        for entry in files {
+        let list2: Vec<(&HashedFile, FileState)> = files.par_iter().map(|entry| { 
             let full_path = path.join(entry.get_path());
 
             if !full_path.exists() {
-                list.push((entry, FileState::Missing));
-                continue;
+                return (entry, FileState::Missing);
             }
 
             let mut hasher = Blake2s256::new();
 
             let file_hash = match get_hash_file(&full_path, &mut hasher) {
                 Ok(r) => r,
-                Err(_) => return None,
+                Err(_) => return (entry, FileState::Missing),
             };
 
             if file_hash == entry.get_hash() {
-                list.push((entry, FileState::Present));
+                (entry, FileState::Present)
             } else {
-                list.push((entry, FileState::Corrupted));
+                (entry, FileState::Corrupted)
             }
-        }
+         }).collect();
 
-        if !list.is_empty() {
-            return Some(list);
+        if !list2.is_empty() {
+            return Some(list2);
         }
     }
 
@@ -197,7 +194,7 @@ fn check_files<'a>(path: &Path, files: &'a [HashedFile]) -> Option<Vec<(&'a Hash
 }
 
 async fn request_files(stream: &mut TcpStream, checked_files: &[(&HashedFile, FileState)]) -> std::io::Result<()> {
-    let body: String = checked_files.iter()
+    let body: String = checked_files.par_iter()
         .filter(|f| {
             if f.1 != FileState::Present {
                 return true;
