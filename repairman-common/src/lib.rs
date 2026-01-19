@@ -193,7 +193,38 @@ pub fn parse_request(mut stream: &std::net::TcpStream) -> std::io::Result<Reques
     Ok(Request::new(version, request_type, Some(file_name_size), Some(body)))
 }
 
-pub async fn async_parse_request(stream: &mut tokio::net::TcpStream) -> std::io::Result<Request> {
+pub struct NewRequest {
+    version: RequestVersion,
+    request_type: RequestType,
+    file_name_size: Option<usize>,
+    body_size: Option<usize>,
+}
+
+impl NewRequest {
+    pub fn new(version: RequestVersion, request_type: RequestType,
+            file_name_size: Option<usize>, body_size: Option<usize>) -> NewRequest {
+        NewRequest { version, request_type, file_name_size, body_size }
+    }
+
+    pub fn get_version(&self) -> &RequestVersion {
+        &self.version
+    }
+
+    pub fn get_type(&self) -> &RequestType {
+        &self.request_type
+    }
+
+    pub fn get_file_name_size(&self) -> &Option<usize> {
+        &self.file_name_size
+    }
+
+    pub fn get_body_size(&self) -> &Option<usize> {
+        &self.body_size
+    }
+}
+
+
+pub async fn async_parse_request(stream: &mut tokio::net::TcpStream) -> std::io::Result<NewRequest> {
     use tokio::io::AsyncReadExt;
 
     let mut header = [0u8; 64];
@@ -225,7 +256,7 @@ pub async fn async_parse_request(stream: &mut tokio::net::TcpStream) -> std::io:
             match t {
                 "GIVE-HASHES" => RequestType::GiveHashes,
                 "GIVE-FILES" => RequestType::GiveFiles,
-                "GET-HASHES" => return Ok(Request::new(version, RequestType::GetHashes, None, None)),
+                "GET-HASHES" => return Ok(NewRequest::new(version, RequestType::GetHashes, None, None)),
                 "GET-FILES" => RequestType::GetFiles,
                 _ => return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid request type was recieved.")),
             }
@@ -233,12 +264,9 @@ pub async fn async_parse_request(stream: &mut tokio::net::TcpStream) -> std::io:
         None => return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "Header incomplete, request type wasn't recieved.")),
     };
 
-    let mut body = vec![0u8; body_size];
-    stream.read_exact(&mut body).await?;
-
     if request_type == RequestType::GiveHashes {
-        return Ok(Request::new(version, request_type, None, Some(body)));
+        return Ok(NewRequest::new(version, request_type, None, Some(body_size)));
     }
 
-    Ok(Request::new(version, request_type, Some(file_name_size), Some(body)))
+    Ok(NewRequest::new(version, request_type, Some(file_name_size), Some(body_size)))
 }

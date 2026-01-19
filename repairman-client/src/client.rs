@@ -1,5 +1,5 @@
 use std::{
-    fs,
+    fs::{self, File},
     io::{self, Write},
     path::Path, sync::Arc,
 };
@@ -7,9 +7,7 @@ use std::{
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 
 use tokio::{
-    net::*,
-    io::AsyncWriteExt,
-    sync::mpsc,
+    io::{AsyncReadExt, AsyncWriteExt}, net::*, sync::mpsc, task
 };
 
 
@@ -33,30 +31,31 @@ pub async fn start_communication(server: &str, origin_path: &str) -> std::io::Re
         return Err(io::Error::new(io::ErrorKind::InvalidData, "Response isn't file hashes."));
     }
 
+    let mut body = vec![0u8; response.get_body_size().unwrap()];
 
-    if let Some(body) = response.get_body() {
-        let body = match str::from_utf8(body) {
-            Ok(b) => b,
-            Err(_) => return Err(io::Error::new(io::ErrorKind::InvalidData, "Couldn't turn response body into string.")),
+    stream.read_exact(&mut body).await?;
+
+    let body = match str::from_utf8(&body) {
+        Ok(b) => b,
+        Err(_) => return Err(io::Error::new(io::ErrorKind::InvalidData, "Couldn't turn response body into string.")),
+    };
+
+    let lines = body.lines();
+
+    for line in lines {
+        let mut part = line.split(' ');
+            
+        let path = match part.next() {
+            Some(p) => p,
+            None => return Err(io::Error::new(io::ErrorKind::InvalidData, "Responses body contains invalid path.")),
         };
 
-        let lines = body.lines();
+        let hash = match part.next() {
+            Some(h) => h,
+            None => return Err(io::Error::new(io::ErrorKind::InvalidData, "Responses body contains invalid hash.")),
+        };
 
-        for line in lines {
-            let mut part = line.split(' ');
-            
-            let path = match part.next() {
-                Some(p) => p,
-                None => return Err(io::Error::new(io::ErrorKind::InvalidData, "Responses body contains invalid path.")),
-            };
-
-            let hash = match part.next() {
-                Some(h) => h,
-                None => return Err(io::Error::new(io::ErrorKind::InvalidData, "Responses body contains invalid hash.")),
-            };
-
-            file_list.push(HashedFile::new(path, hash));
-        }
+        file_list.push(HashedFile::new(path, hash));
     }
 
     let checked_files = match check_files(Path::new(origin_path), &file_list) {
@@ -82,60 +81,91 @@ pub async fn start_communication(server: &str, origin_path: &str) -> std::io::Re
         fs::create_dir(origin_path)?;
     }
 
-    let (tx, mut rx) = mpsc::channel::<Arc<Request>>(100);
+    let (tx, mut rx) = mpsc::channel::<Arc<Body>>(100);
 
     let origin = Arc::new(origin_path.to_string());
 
-    let unpacker_handle = tokio::spawn(async move {
-        while let Some(file) = rx.recv().await {
-            if file.get_type() != &RequestType::GiveFiles {
-                continue;
-            }
+    let unpacker_handle = task::spawn_blocking(move || {
+        let result: io::Result<()> = (|| {
+            let mut current_decoder: Option<ZlibDecoder<fs::File>> = None;
 
-            let origin_path = Arc::clone(&origin);
-            
-            tokio::task::spawn_blocking(move || {
-                let result: io::Result<()> = (|| {
-                    let body = file.get_body().as_ref().unwrap();
+            while let Some(body) = rx.blocking_recv() {
+                match body.as_ref() {
+                    Body::StartFile(name, _size) => {
+                        let path = Path::new(origin.as_ref()).join(name);
 
-                    let (file_name, compressed_file) = body.split_at(file.get_file_name_size().unwrap());
+                        if let Some(parent) = path.parent() {
+                            fs::create_dir_all(parent)?;
+                        }
 
-                    let file_name = match str::from_utf8(file_name) {
-                        Ok(s) => s,
-                        Err(_) => return Err(io::Error::new(io::ErrorKind::InvalidData, "Couldn't convert name from file request body to string.")),
-                    };
+                        let file = File::create_new(path)?;
+                        current_decoder = Some(ZlibDecoder::new(file));
+                    },
 
-                    let path = Path::new(origin_path.as_str()).join(file_name);
+                    Body::Content(cont) => {
+                        if let Some(ref mut decoder) = current_decoder {
+                            decoder.write_all(cont)?;
+                        }
+                    },
 
-                    if let Some(parent) = path.parent() {
-                        fs::create_dir_all(parent)?;
-                    } else {
-                        return Err(io::Error::new(io::ErrorKind::InvalidData, "Path of one object doesn't have a parent."));
-                    }
-
-                    let output_file = fs::File::create(&path)?;
-                    let mut z = ZlibDecoder::new(output_file);
-                    z.write_all(compressed_file)?;
-                    z.finish()?;
-
-                    Ok(())
-                })();
-
-                if let Err(e) = result {
-                    eprintln!("Error unpacking a file: {e}");
+                    Body::FileDone => {
+                        if let Some(decode) = current_decoder.take() {
+                            decode.finish()?;
+                        }
+                    },
                 }
-            });
+            }
+            Ok(())
+        })();
+
+        if let Err(err) = result {
+            eprintln!("Error unpacking: {err}");
         }
     });
 
 
     for _ in 0..to_download_total.len()  {
-        let response = Arc::new(async_parse_request(&mut stream).await?);
+        let response = async_parse_request(&mut stream).await?;
 
-        match tx.send(Arc::clone(&response)).await {
+        if response.get_type() != &RequestType::GiveFiles {
+            continue;
+        }
+
+        let mut file_name_buffer = vec![0u8; response.get_file_name_size().unwrap()];
+
+        stream.read_exact(&mut file_name_buffer).await?;
+
+        let file_name = match String::from_utf8(file_name_buffer) {
+            Ok(f) => f,
+            Err(err) => {
+                eprintln!("Error passing a file request to the unpacking task: {}", err);
+                continue;
+            },
+        };
+
+        let name = Arc::new(Body::StartFile(file_name, response.get_body_size().unwrap()));
+
+        match tx.send(Arc::clone(&name)).await {
             Ok(_) => (),
             Err(err) => eprintln!("Error passing a file request to the unpacking task: {}", err),
+        };
+
+        let mut send_count = response.get_body_size().unwrap() - response.get_file_name_size().unwrap();
+        while send_count > 0 {
+            let to_read = std::cmp::min(send_count, 8192);
+            let mut buffer = vec![0u8; to_read];
+            stream.read_exact(&mut buffer).await?;
+            let to_send = Arc::new(Body::Content(buffer));
+            tx.send(Arc::clone(&to_send)).await.map_err(|err| {
+                io::Error::new(io::ErrorKind::InvalidData, err.to_string())
+            })?;
+            send_count -= to_read;
         }
+
+        let end_msg = Arc::new(Body::FileDone);
+        tx.send(end_msg).await.map_err(|err| {
+            io::Error::new(io::ErrorKind::InvalidData, err.to_string())
+        })?;
     }
 
     drop(tx);
@@ -143,6 +173,12 @@ pub async fn start_communication(server: &str, origin_path: &str) -> std::io::Re
     unpacker_handle.await?;
 
     Ok(())
+}
+
+enum Body {
+    StartFile(String, usize),
+    Content(Vec<u8>),
+    FileDone,
 }
 
 async fn request_hashes(stream: &mut TcpStream) -> std::io::Result<()> {
