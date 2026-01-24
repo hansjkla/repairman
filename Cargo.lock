@@ -195,12 +195,12 @@ dependencies = [
 
 [[package]]
 name = "flate2"
-version = "1.1.5"
+version = "1.1.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bfe33edd8e85a12a67454e37f8c75e730830d83e313556ab9ebf9ee7fbeb3bfb"
+checksum = "b375d6465b98090a5f25b1c7703f3859783755aa9a80433b36e0379a3ec2f369"
 dependencies = [
  "crc32fast",
- "miniz_oxide",
+ "miniz_oxide 0.8.9",
 ]
 
 [[package]]
@@ -317,6 +317,15 @@ checksum = "1fa76a2c86f704bdb222d66965fb3d63269ce38518b83cb0575fca855ebb6316"
 dependencies = [
  "adler2",
  "simd-adler32",
+]
+
+[[package]]
+name = "miniz_oxide"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5faa9f23e86bd5768d76def086192ff5f869fb088da12a976ea21e9796b975f6"
+dependencies = [
+ "adler2",
 ]
 
 [[package]]
@@ -510,7 +519,7 @@ dependencies = [
  "digest",
  "file-hashing",
  "flate2",
- "miniz_oxide",
+ "miniz_oxide 0.9.0",
  "rayon",
  "repairman-common",
  "tokio",
@@ -525,7 +534,7 @@ dependencies = [
  "digest",
  "file-hashing",
  "flate2",
- "miniz_oxide",
+ "miniz_oxide 0.9.0",
  "rayon",
  "tokio",
 ]
@@ -539,9 +548,10 @@ dependencies = [
  "digest",
  "file-hashing",
  "flate2",
- "miniz_oxide",
+ "miniz_oxide 0.9.0",
  "rayon",
  "repairman-common",
+ "tokio",
 ]
 
 [[package]]

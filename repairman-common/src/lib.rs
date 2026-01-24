@@ -45,6 +45,8 @@ pub enum RequestType {
     GetFiles,
     GiveHashes,
     GiveFiles,
+    Chunk,
+    EndFile,
 }
 
 impl core::fmt::Display for RequestType {
@@ -53,7 +55,9 @@ impl core::fmt::Display for RequestType {
             RequestType::GetFiles => write!(f, "Get Files"),
             RequestType::GetHashes => write!(f, "Get Hashes"),
             RequestType::GiveHashes => write!(f, "Give Hashes"),
-            RequestType::GiveFiles => write!(f, "Give Hashes"),
+            RequestType::GiveFiles => write!(f, "Give Files"),
+            RequestType::Chunk => write!(f, "Chunk"),
+            RequestType::EndFile => write!(f, "End File"),
         }
     }
 }
@@ -130,6 +134,8 @@ pub fn create_header(version: RequestVersion, reqeuest_type: RequestType, file_n
         RequestType::GetFiles => header_text.push_str("GET-FILES"),
         RequestType::GiveHashes => header_text.push_str("GIVE-HASHES"),
         RequestType::GiveFiles => header_text.push_str("GIVE-FILES"),
+        RequestType::Chunk => header_text.push_str("CHUNK"),
+        RequestType::EndFile => header_text.push_str("END-FILE"),
     }
 
     let bytes = header_text.as_bytes();
@@ -258,6 +264,8 @@ pub async fn async_parse_request(stream: &mut tokio::net::TcpStream) -> std::io:
                 "GIVE-FILES" => RequestType::GiveFiles,
                 "GET-HASHES" => return Ok(NewRequest::new(version, RequestType::GetHashes, None, None)),
                 "GET-FILES" => RequestType::GetFiles,
+                "CHUNK" => RequestType::Chunk,
+                "END-FILE" => RequestType::EndFile,
                 _ => return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid request type was recieved.")),
             }
         }

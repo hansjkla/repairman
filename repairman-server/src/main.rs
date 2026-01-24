@@ -7,7 +7,8 @@ use hashed_files::par_hash;
 mod hashed_files;
 mod server;
 
-fn main() {
+#[tokio::main]
+async fn main() {
     let args: Vec<String> = env::args().collect();
 
     if args.len() > 2 {
@@ -31,5 +32,5 @@ fn main() {
         println!("{}", item);
     }
 
-    run_server(&list, "127.0.0.1:6767").unwrap();
+    run_server(&list, "127.0.0.1:6767").await.unwrap();
 }

@@ -1,7 +1,7 @@
 use std::{
     fs::{self, File},
     io::{self, Write},
-    path::Path, sync::Arc,
+    path::Path,
 };
 
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
@@ -81,30 +81,30 @@ pub async fn start_communication(server: &str, origin_path: &str) -> std::io::Re
         fs::create_dir(origin_path)?;
     }
 
-    let (tx, mut rx) = mpsc::channel::<Arc<Body>>(100);
+    let (tx, mut rx) = mpsc::channel::<Body>(100);
 
-    let origin = Arc::new(origin_path.to_string());
+    let origin = origin_path.to_string();
 
     let unpacker_handle = task::spawn_blocking(move || {
         let result: io::Result<()> = (|| {
             let mut current_decoder: Option<ZlibDecoder<fs::File>> = None;
 
             while let Some(body) = rx.blocking_recv() {
-                match body.as_ref() {
-                    Body::StartFile(name, _size) => {
-                        let path = Path::new(origin.as_ref()).join(name);
+                match body {
+                    Body::StartFile(name) => {
+                        let path = Path::new(&origin).join(name);
 
                         if let Some(parent) = path.parent() {
                             fs::create_dir_all(parent)?;
                         }
 
-                        let file = File::create_new(path)?;
+                        let file = File::create(path)?;
                         current_decoder = Some(ZlibDecoder::new(file));
                     },
 
                     Body::Content(cont) => {
                         if let Some(ref mut decoder) = current_decoder {
-                            decoder.write_all(cont)?;
+                            decoder.write_all(&cont)?;
                         }
                     },
 
@@ -143,27 +143,36 @@ pub async fn start_communication(server: &str, origin_path: &str) -> std::io::Re
             },
         };
 
-        let name = Arc::new(Body::StartFile(file_name, response.get_body_size().unwrap()));
+        let name = Body::StartFile(file_name);
 
-        match tx.send(Arc::clone(&name)).await {
+        match tx.send(name).await {
             Ok(_) => (),
             Err(err) => eprintln!("Error passing a file request to the unpacking task: {}", err),
         };
 
-        let mut send_count = response.get_body_size().unwrap() - response.get_file_name_size().unwrap();
-        while send_count > 0 {
-            let to_read = std::cmp::min(send_count, 8192);
-            let mut buffer = vec![0u8; to_read];
-            stream.read_exact(&mut buffer).await?;
-            let to_send = Arc::new(Body::Content(buffer));
-            tx.send(Arc::clone(&to_send)).await.map_err(|err| {
-                io::Error::new(io::ErrorKind::InvalidData, err.to_string())
-            })?;
-            send_count -= to_read;
+
+        loop {
+            let response = async_parse_request(&mut stream).await?;
+
+            match response.get_type() {
+                RequestType::EndFile => break,
+                RequestType::Chunk => {
+                    let to_read = response.get_body_size().unwrap();
+                    let mut buffer = vec![0u8; to_read];
+                    stream.read_exact(&mut buffer).await?;
+                    let to_send = Body::Content(buffer);
+                    tx.send(to_send).await.map_err(|err| {
+                        io::Error::new(io::ErrorKind::InvalidData, err.to_string())
+                    })?;
+                },
+                _ => {
+                    eprintln!("Didn't recieve a right response.");
+                    break;
+                },
+            }
         }
 
-        let end_msg = Arc::new(Body::FileDone);
-        tx.send(end_msg).await.map_err(|err| {
+        tx.send(Body::FileDone).await.map_err(|err| {
             io::Error::new(io::ErrorKind::InvalidData, err.to_string())
         })?;
     }
@@ -176,12 +185,12 @@ pub async fn start_communication(server: &str, origin_path: &str) -> std::io::Re
 }
 
 enum Body {
-    StartFile(String, usize),
+    StartFile(String),
     Content(Vec<u8>),
     FileDone,
 }
 
-async fn request_hashes(stream: &mut TcpStream) -> std::io::Result<()> {
+async fn request_hashes(stream: &mut TcpStream) -> io::Result<()> {
     let header = create_header(RequestVersion::ZEROpOne, RequestType::GetHashes, 0, 0);
 
     stream.write_all(&header).await?;
