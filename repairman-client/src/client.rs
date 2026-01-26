@@ -14,12 +14,13 @@ use tokio::{
 use blake2::Blake2s256;
 use digest::Digest;
 use file_hashing::get_hash_file;
-use flate2::write::ZlibDecoder;
+use flate2::write::DeflateDecoder;
 
 use repairman_common::*;
 
 
 pub async fn start_communication(server: &str, origin_path: &str) -> std::io::Result<()> {
+    
     let mut stream = tokio::net::TcpStream::connect(format!("{server}:6767")).await?;
     let mut file_list = Vec::new();
 
@@ -44,7 +45,7 @@ pub async fn start_communication(server: &str, origin_path: &str) -> std::io::Re
 
     for line in lines {
         let mut part = line.split(' ');
-            
+                
         let path = match part.next() {
             Some(p) => p,
             None => return Err(io::Error::new(io::ErrorKind::InvalidData, "Responses body contains invalid path.")),
@@ -58,128 +59,145 @@ pub async fn start_communication(server: &str, origin_path: &str) -> std::io::Re
         file_list.push(HashedFile::new(path, hash));
     }
 
-    let checked_files = match check_files(Path::new(origin_path), &file_list) {
-        Some(v) => v,
-        None => return Err(io::Error::new(io::ErrorKind::InvalidData, "Error checking the files against hashes.")),
-    };
+    let mut loop_iter = 0;
 
-    for file in &checked_files {
-        println!("{}  {}", file.0.get_path(), file.1);
-    }
-    
-    request_files(&mut stream, &checked_files).await?;
+    loop {
+        let checked_files = match check_files(Path::new(origin_path), &file_list) {
+            Some(v) => v,
+            None => return Err(io::Error::new(io::ErrorKind::InvalidData, "Error checking the files against hashes.")),
+        };
 
-    let to_download_total:Vec<&(&HashedFile, FileState)> = checked_files.par_iter()
-        .filter(|f| {
-            if f.1 != FileState::Present {
-                return true;
+        for file in &checked_files {
+            println!("{}  {}", file.0.get_path(), file.1);
+        }
+        println!(" ");
+        
+        request_files(&mut stream, &checked_files).await?;
+
+        let to_download_total: Vec<&(&HashedFile, FileState)> = checked_files.par_iter()
+            .filter(|f| {
+                if f.1 != FileState::Present {
+                    return true;
+                }
+                false
+            }).collect();
+
+        if to_download_total.is_empty() {
+            break;
+        } else if loop_iter == 3 {
+            eprintln!("Still incorrect files, after third download attempt, existing.");
+            break;
+        }
+
+        if !Path::new(origin_path).exists() {
+            fs::create_dir(origin_path)?;
+        }
+
+        let (tx, mut rx) = mpsc::channel::<Body>(100);
+
+        let origin = origin_path.to_string();
+
+        let unpacker_handle = task::spawn_blocking(move || {
+            let result: io::Result<()> = (|| {
+                let mut current_decoder: Option<DeflateDecoder<fs::File>> = None;
+
+                while let Some(body) = rx.blocking_recv() {
+                    match body {
+                        Body::StartFile(name) => {
+                            let path = Path::new(&origin).join(name);
+
+                            if let Some(parent) = path.parent() {
+                                fs::create_dir_all(parent)?;
+                            }
+
+                            let file = File::create(path)?;
+                            current_decoder = Some(DeflateDecoder::new(file));
+                        },
+
+                        Body::Content(cont) => {
+                            if let Some(ref mut decoder) = current_decoder {
+                                decoder.write_all(&cont)?;
+                            }
+                        },
+
+                        Body::FileDone => {
+                            if let Some(decode) = current_decoder.take() {
+                                decode.finish()?;
+                            }
+                        },
+                    }
+                }
+                Ok(())
+            })();
+
+            if let Err(err) = result {
+                eprintln!("Error unpacking: {err}");
             }
-            false
-        }).collect();
+        });
 
-    if !Path::new(origin_path).exists() {
-        fs::create_dir(origin_path)?;
-    }
 
-    let (tx, mut rx) = mpsc::channel::<Body>(100);
+        for _ in 0..to_download_total.len()  {
+            let response = async_parse_request(&mut stream).await?;
 
-    let origin = origin_path.to_string();
+            if response.get_type() != &RequestType::GiveFiles {
+                continue;
+            }
 
-    let unpacker_handle = task::spawn_blocking(move || {
-        let result: io::Result<()> = (|| {
-            let mut current_decoder: Option<ZlibDecoder<fs::File>> = None;
+            let mut file_name_buffer = vec![0u8; response.get_file_name_size().unwrap()];
 
-            while let Some(body) = rx.blocking_recv() {
-                match body {
-                    Body::StartFile(name) => {
-                        let path = Path::new(&origin).join(name);
+            stream.read_exact(&mut file_name_buffer).await?;
 
-                        if let Some(parent) = path.parent() {
-                            fs::create_dir_all(parent)?;
-                        }
+            let file_name = match String::from_utf8(file_name_buffer) {
+                Ok(f) => f,
+                Err(err) => {
+                    eprintln!("Error passing a file request to the unpacking task: {}", err);
+                    continue;
+                },
+            };
 
-                        let file = File::create(path)?;
-                        current_decoder = Some(ZlibDecoder::new(file));
+            let name = Body::StartFile(file_name);
+
+            match tx.send(name).await {
+                Ok(_) => (),
+                Err(err) => eprintln!("Error passing a file request to the unpacking task: {}", err),
+            };
+
+
+            loop {
+                let response = async_parse_request(&mut stream).await?;
+
+                match response.get_type() {
+                    RequestType::EndFile => break,
+                    RequestType::Chunk => {
+                        let to_read = response.get_body_size().unwrap();
+                        let mut buffer = vec![0u8; to_read];
+                        stream.read_exact(&mut buffer).await?;
+                        let to_send = Body::Content(buffer);
+                        tx.send(to_send).await.map_err(|err| {
+                            io::Error::new(io::ErrorKind::InvalidData, err.to_string())
+                        })?;
                     },
-
-                    Body::Content(cont) => {
-                        if let Some(ref mut decoder) = current_decoder {
-                            decoder.write_all(&cont)?;
-                        }
-                    },
-
-                    Body::FileDone => {
-                        if let Some(decode) = current_decoder.take() {
-                            decode.finish()?;
-                        }
+                    _ => {
+                        eprintln!("Didn't recieve a right response.");
+                        break;
                     },
                 }
             }
-            Ok(())
-        })();
 
-        if let Err(err) = result {
-            eprintln!("Error unpacking: {err}");
-        }
-    });
-
-
-    for _ in 0..to_download_total.len()  {
-        let response = async_parse_request(&mut stream).await?;
-
-        if response.get_type() != &RequestType::GiveFiles {
-            continue;
+            tx.send(Body::FileDone).await.map_err(|err| {
+                io::Error::new(io::ErrorKind::InvalidData, err.to_string())
+            })?;
         }
 
-        let mut file_name_buffer = vec![0u8; response.get_file_name_size().unwrap()];
+        drop(tx);
 
-        stream.read_exact(&mut file_name_buffer).await?;
+        unpacker_handle.await?;
 
-        let file_name = match String::from_utf8(file_name_buffer) {
-            Ok(f) => f,
-            Err(err) => {
-                eprintln!("Error passing a file request to the unpacking task: {}", err);
-                continue;
-            },
-        };
-
-        let name = Body::StartFile(file_name);
-
-        match tx.send(name).await {
-            Ok(_) => (),
-            Err(err) => eprintln!("Error passing a file request to the unpacking task: {}", err),
-        };
-
-
-        loop {
-            let response = async_parse_request(&mut stream).await?;
-
-            match response.get_type() {
-                RequestType::EndFile => break,
-                RequestType::Chunk => {
-                    let to_read = response.get_body_size().unwrap();
-                    let mut buffer = vec![0u8; to_read];
-                    stream.read_exact(&mut buffer).await?;
-                    let to_send = Body::Content(buffer);
-                    tx.send(to_send).await.map_err(|err| {
-                        io::Error::new(io::ErrorKind::InvalidData, err.to_string())
-                    })?;
-                },
-                _ => {
-                    eprintln!("Didn't recieve a right response.");
-                    break;
-                },
-            }
-        }
-
-        tx.send(Body::FileDone).await.map_err(|err| {
-            io::Error::new(io::ErrorKind::InvalidData, err.to_string())
-        })?;
+        loop_iter += 1;
     }
 
-    drop(tx);
-
-    unpacker_handle.await?;
+    let disconnect_header = create_header(RequestVersion::ZEROpOne, RequestType::Disconnect, 0, 0);
+    stream.write_all(&disconnect_header).await?;
 
     Ok(())
 }

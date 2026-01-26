@@ -6,8 +6,7 @@ use tokio::{
     io::{AsyncReadExt, AsyncWriteExt}, net::{TcpListener, TcpStream}, fs,
 };
 
-use flate2::Compression;
-use flate2::write::ZlibEncoder;
+use flate2::{Compression, write::DeflateEncoder};
 
 use repairman_common::*;
 
@@ -62,6 +61,9 @@ async fn handle_connection(mut stream: TcpStream, hashes: Arc<Vec<u8>>) -> std::
                     Err(_) => return Err(io::Error::new(io::ErrorKind::InvalidData, "Couldn't convert body to string.")),
                 };
 
+                let mut buffer = vec![0u8; 8192];
+                let mut compression_buffer = Vec::new();
+
                 for file in files.lines() {
                     let file_name_len = file.len() as u32;
 
@@ -71,20 +73,21 @@ async fn handle_connection(mut stream: TcpStream, hashes: Arc<Vec<u8>>) -> std::
                     stream.write_all(file.as_bytes()).await?;
 
                     let mut file_handle = fs::File::open(file).await?;
-                    let mut buffer = vec![0u8; 8192];
-                    let mut encoder = ZlibEncoder::new(Vec::new(), Compression::default());
+                    let mut encoder = DeflateEncoder::new(&mut compression_buffer, Compression::fast());
 
                     loop {
                         let n = file_handle.read(&mut buffer).await?;
                         if n == 0 { break; }
                         
                         encoder.write_all(&buffer[..n])?;
-                        let compressed_data = encoder.get_mut().split_off(0);
+                        let compressed_data = encoder.get_mut();
 
                         if !compressed_data.is_empty() {
                             let chunk_header = create_header(RequestVersion::ZEROpOne, RequestType::Chunk, 0, compressed_data.len() as u32);
                             stream.write_all(&chunk_header).await?;
-                            stream.write_all(&compressed_data).await?;
+                            stream.write_all(compressed_data).await?;
+
+                            compressed_data.clear();
                         }
                     }
 
@@ -92,15 +95,18 @@ async fn handle_connection(mut stream: TcpStream, hashes: Arc<Vec<u8>>) -> std::
                     if !final_compressed_data.is_empty() {
                         let chunk_header = create_header(RequestVersion::ZEROpOne, RequestType::Chunk, 0, final_compressed_data.len() as u32);
                         stream.write_all(&chunk_header).await?;
-                        stream.write_all(&final_compressed_data).await?;
+                        stream.write_all(final_compressed_data).await?;
                     }
 
                     let end_header = create_header(RequestVersion::ZEROpOne, RequestType::EndFile, 0, 0);
                     stream.write_all(&end_header).await?;
-                }
 
-                break;
+                    compression_buffer.clear();
+                }
             },
+
+            RequestType::Disconnect => break,
+            
             _ => return Err(io::Error::new(io::ErrorKind::InvalidData, "Got an invalid request type.")),
         }
     }
