@@ -67,13 +67,13 @@ impl core::fmt::Display for RequestType {
 pub struct Request {
     version: RequestVersion,
     request_type: RequestType,
-    file_name_size: Option<usize>,
-    body_size: Option<usize>,
+    file_name_size: usize,
+    body_size: usize,
 }
 
 impl Request {
     pub fn new(version: RequestVersion, request_type: RequestType,
-            file_name_size: Option<usize>, body_size: Option<usize>) -> Request {
+            file_name_size: usize, body_size: usize) -> Request {
         Request { version, request_type, file_name_size, body_size }
     }
 
@@ -85,27 +85,18 @@ impl Request {
         &self.request_type
     }
 
-    pub fn get_file_name_size(&self) -> &Option<usize> {
+    pub fn get_file_name_size(&self) -> &usize {
         &self.file_name_size
     }
 
-    pub fn get_body_size(&self) -> &Option<usize> {
+    pub fn get_body_size(&self) -> &usize {
         &self.body_size
     }
 }
 
 impl core::fmt::Display for Request {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let mut file_name_size = "None".to_string();
-        if let Some(size) = self.get_file_name_size() {
-            file_name_size = size.to_string();
-        }
-        let mut body_size = "None".to_string();
-        if let Some(size) = self.get_body_size() {
-            body_size = size.to_string();
-        }
-
-        write!(f, "Version: {}\nType: {}\nFile name size: {}\nBody size: {}", self.get_version(), self.get_type(), file_name_size, body_size)
+        write!(f, "Version: {}\nType: {}\nFile name size: {}\nBody size: {}", self.get_version(), self.get_type(), self.get_file_name_size(), self.get_body_size())
     }
 }
 
@@ -188,7 +179,7 @@ pub async fn async_parse_request(stream: &mut tokio::net::TcpStream) -> std::io:
             match t {
                 "GIVE-HASHES" => RequestType::GiveHashes,
                 "GIVE-FILES" => RequestType::GiveFiles,
-                "GET-HASHES" => return Ok(Request::new(version, RequestType::GetHashes, None, None)),
+                "GET-HASHES" => return Ok(Request::new(version, RequestType::GetHashes, 0, 0)),
                 "GET-FILES" => RequestType::GetFiles,
                 "CHUNK" => RequestType::Chunk,
                 "END-FILE" => RequestType::EndFile,
@@ -200,8 +191,8 @@ pub async fn async_parse_request(stream: &mut tokio::net::TcpStream) -> std::io:
     };
 
     if request_type == RequestType::GiveHashes {
-        return Ok(Request::new(version, request_type, None, Some(body_size)));
+        return Ok(Request::new(version, request_type, 0, body_size));
     }
 
-    Ok(Request::new(version, request_type, Some(file_name_size), Some(body_size)))
+    Ok(Request::new(version, request_type, file_name_size, body_size))
 }

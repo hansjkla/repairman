@@ -16,6 +16,7 @@ miniz_oxide.workspace = true
 crc32fast.workspace = true
 rayon.workspace = true
 tokio.workspace = true
+clap.workspace = true
 repairman-common.workspace = true
 
 [lints]

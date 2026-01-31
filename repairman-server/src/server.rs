@@ -1,5 +1,5 @@
 use std::{
-    io::{self, Write}, sync::Arc,
+    io::{self, Write}, sync::Arc
 };
 
 use tokio::{
@@ -54,7 +54,7 @@ async fn handle_connection(mut stream: TcpStream, hashes: Arc<Vec<u8>>) -> std::
             },
 
             RequestType::GetFiles => {
-                let mut files = vec![0u8; request.get_body_size().unwrap()];
+                let mut files = vec![0u8; *request.get_body_size()];
                 stream.read_exact(&mut files).await?;
                 let files = match str::from_utf8(&files) {
                     Ok(f) => f,

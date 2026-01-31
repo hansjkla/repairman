@@ -32,7 +32,7 @@ pub async fn start_communication(server: &str, origin_path: &str) -> std::io::Re
         return Err(io::Error::new(io::ErrorKind::InvalidData, "Response isn't file hashes."));
     }
 
-    let mut body = vec![0u8; response.get_body_size().unwrap()];
+    let mut body = vec![0u8; *response.get_body_size()];
 
     stream.read_exact(&mut body).await?;
 
@@ -143,7 +143,7 @@ pub async fn start_communication(server: &str, origin_path: &str) -> std::io::Re
                 continue;
             }
 
-            let mut file_name_buffer = vec![0u8; response.get_file_name_size().unwrap()];
+            let mut file_name_buffer = vec![0u8; *response.get_file_name_size()];
 
             stream.read_exact(&mut file_name_buffer).await?;
 
@@ -169,7 +169,7 @@ pub async fn start_communication(server: &str, origin_path: &str) -> std::io::Re
                 match response.get_type() {
                     RequestType::EndFile => break,
                     RequestType::Chunk => {
-                        let to_read = response.get_body_size().unwrap();
+                        let to_read = *response.get_body_size();
                         let mut buffer = vec![0u8; to_read];
                         stream.read_exact(&mut buffer).await?;
                         let to_send = Body::Content(buffer);
