@@ -5,7 +5,8 @@ use client::start_communication;
 
 mod client;
 
-fn main() {
+#[tokio::main]
+async fn main() {
     let args: Vec<String> = env::args().collect();
 
     if args.len() > 3 {
@@ -16,5 +17,6 @@ fn main() {
         return;
     }
 
-    start_communication(&args[1], &args[2]).unwrap_or_else(|err| { eprintln!("{err}") });
+    let result = start_communication(&args[1], &args[2]).await;
+    result.unwrap_or_else(|err| { eprintln!("{err}") });
 }
