@@ -18,6 +18,9 @@ struct Args {
 
     #[arg(short, long, default_value_t = String::from("0.0.0.0"))]
     address: String,
+
+    #[arg(short, long)]
+    cache: Option<String>
 }
 
 #[tokio::main]
@@ -38,7 +41,7 @@ async fn main() {
         println!("{}", item);
     }
 
-    match run_server(&list, &format!("{}:{}", args.address, args.port)).await {
+    match run_server(&list, &format!("{}:{}", args.address, args.port), args.cache).await {
         Ok(_) => (),
         Err(e) => {
             eprintln!("{e}");

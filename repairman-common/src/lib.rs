@@ -1,3 +1,4 @@
+#[derive(PartialEq, Eq)]
 pub struct HashedFile {
     path: String,
     hash: String,
