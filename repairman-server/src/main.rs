@@ -7,6 +7,7 @@ use clap::{Parser};
 
 mod hashed_files;
 mod server;
+mod cache;
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
