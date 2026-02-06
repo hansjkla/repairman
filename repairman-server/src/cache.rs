@@ -137,7 +137,7 @@ pub fn create_cache(path: &Path, files: &[HashedFile]) -> io::Result<()> {
         let path = path.join(Path::new("files")).join(f.get_path());
 
         if let Some(parent) = path.parent() && !parent.exists() {
-                fs::create_dir_all(parent)?;
+            fs::create_dir_all(parent)?;
         }
 
         let mut os_file_path = path.into_os_string();

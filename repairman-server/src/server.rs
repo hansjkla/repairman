@@ -1,6 +1,6 @@
 use std::{
     io::{self, Write},
-    path::Path,
+    path::{Path, PathBuf},
     sync::Arc
 };
 
@@ -34,39 +34,37 @@ pub async fn run_server(files: &[HashedFile], addr: &str, cache: Option<String>)
 
     let hashes = Arc::new(hashes);
 
-    let mut use_cache = false;
+    if let Some(ref path) = cache {
+        let path = Path::new(&path);
+        if path.exists() {
+            parse_cache(path, files)?;
+        } else {
+            create_cache(path, files)?;
+        }
 
-    match cache {
-        Some(path) => {
-            let path = Path::new(&path);
-            if path.exists() {
-                parse_cache(path, files)?;
-            } else {
-                create_cache(path, files)?;
-            }
-        },
-        // None => use_cache = true,
-        None => use_cache = false,
+        println!("Caching done...\nListening now");
     }
+
+    let arc_cache = Arc::new(cache);
 
     loop {
         let (stream, _) = listener.accept().await?;
 
         let hashes_clone = Arc::clone(&hashes);
+        let cache_clone = Arc::clone(&arc_cache);
 
-        if !use_cache {
-            tokio::spawn(async move {
-                handle_connection(stream, hashes_clone).await.unwrap_or_else(|err| {
-                    eprintln!("Error handeling a connection: {err}");
-                });
+        
+        tokio::spawn(async move {
+            handle_connection(stream, hashes_clone, cache_clone).await.unwrap_or_else(|err| {
+                eprintln!("Error handeling a connection: {err}");
             });
-        }
+        });
     }
 
     // Ok(())
 }
 
-async fn handle_connection(mut stream: TcpStream, hashes: Arc<Vec<u8>>) -> std::io::Result<()> {
+async fn handle_connection(mut stream: TcpStream, hashes: Arc<Vec<u8>>, cache_path: Arc<Option<String>>) -> std::io::Result<()> {
     loop {
         let request = async_parse_request(&mut stream).await?;
 
@@ -94,36 +92,57 @@ async fn handle_connection(mut stream: TcpStream, hashes: Arc<Vec<u8>>) -> std::
                     stream.write_all(&header).await?;
                     stream.write_all(file.as_bytes()).await?;
 
-                    let mut file_handle = fs::File::open(file).await?;
-                    let mut encoder = DeflateEncoder::new(&mut compression_buffer, Compression::fast());
+                    if let Some(path) = cache_path.as_ref() {
+                        let mut path = Path::new(path).join("files").join(file).into_os_string();
+                        path.push(".comp");
+                        let path = PathBuf::from(path);
 
-                    loop {
-                        let n = file_handle.read(&mut buffer).await?;
-                        if n == 0 { break; }
-                        
-                        encoder.write_all(&buffer[..n])?;
-                        let compressed_data = encoder.get_mut();
+                        let mut file_handle = fs::File::open(path).await?;
 
-                        if !compressed_data.is_empty() {
-                            let chunk_header = create_header(RequestVersion::ZEROpOne, RequestType::Chunk, 0, compressed_data.len() as u32);
-                            stream.write_all(&chunk_header).await?;
-                            stream.write_all(compressed_data).await?;
+                        loop {
+                            let n = file_handle.read(&mut buffer).await?;
+                            if n == 0 { break; }
 
-                            compressed_data.clear();
+                            let header = create_header(RequestVersion::ZEROpOne, RequestType::Chunk, 0, n as u32);
+                            stream.write_all(&header).await?;
+                            stream.write_all(&buffer[..n]).await?;
                         }
+
+                        let end_header = create_header(RequestVersion::ZEROpOne, RequestType::EndFile, 0, 0);
+                        stream.write_all(&end_header).await?;
+
+                    } else {
+                        let mut file_handle = fs::File::open(file).await?;
+                        let mut encoder = DeflateEncoder::new(&mut compression_buffer, Compression::fast());
+
+                        loop {
+                            let n = file_handle.read(&mut buffer).await?;
+                            if n == 0 { break; }
+                            
+                            encoder.write_all(&buffer[..n])?;
+                            let compressed_data = encoder.get_mut();
+
+                            if !compressed_data.is_empty() {
+                                let chunk_header = create_header(RequestVersion::ZEROpOne, RequestType::Chunk, 0, compressed_data.len() as u32);
+                                stream.write_all(&chunk_header).await?;
+                                stream.write_all(compressed_data).await?;
+
+                                compressed_data.clear();
+                            }
+                        }
+
+                        let final_compressed_data = encoder.finish()?;
+                        if !final_compressed_data.is_empty() {
+                            let chunk_header = create_header(RequestVersion::ZEROpOne, RequestType::Chunk, 0, final_compressed_data.len() as u32);
+                            stream.write_all(&chunk_header).await?;
+                            stream.write_all(final_compressed_data).await?;
+                        }
+
+                        let end_header = create_header(RequestVersion::ZEROpOne, RequestType::EndFile, 0, 0);
+                        stream.write_all(&end_header).await?;
+
+                        compression_buffer.clear();
                     }
-
-                    let final_compressed_data = encoder.finish()?;
-                    if !final_compressed_data.is_empty() {
-                        let chunk_header = create_header(RequestVersion::ZEROpOne, RequestType::Chunk, 0, final_compressed_data.len() as u32);
-                        stream.write_all(&chunk_header).await?;
-                        stream.write_all(final_compressed_data).await?;
-                    }
-
-                    let end_header = create_header(RequestVersion::ZEROpOne, RequestType::EndFile, 0, 0);
-                    stream.write_all(&end_header).await?;
-
-                    compression_buffer.clear();
                 }
             },
 
