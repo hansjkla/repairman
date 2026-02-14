@@ -1,3 +1,5 @@
+pub mod bufferpool;
+
 #[derive(PartialEq, Eq, Debug, Hash)]
 pub struct HashedFile {
     path: String,

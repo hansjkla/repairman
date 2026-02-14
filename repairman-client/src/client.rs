@@ -16,7 +16,7 @@ use digest::Digest;
 use file_hashing::get_hash_file;
 use flate2::write::DeflateDecoder;
 
-use repairman_common::*;
+use repairman_common::{bufferpool::BufferLease, *};
 
 
 pub async fn start_communication(server: &str, origin_path: &str) -> std::io::Result<()> {
@@ -114,9 +114,10 @@ pub async fn start_communication(server: &str, origin_path: &str) -> std::io::Re
                             current_decoder = Some(DeflateDecoder::new(file));
                         },
 
-                        Body::Content(cont) => {
+                        Body::Content((buffer, to_read)) => {
                             if let Some(ref mut decoder) = current_decoder {
-                                decoder.write_all(&cont)?;
+                                decoder.write_all(&buffer[..to_read])?;
+                                drop(buffer);
                             }
                         },
 
@@ -135,6 +136,8 @@ pub async fn start_communication(server: &str, origin_path: &str) -> std::io::Re
             }
         });
 
+
+        let bufferpool = bufferpool::BufferPool::new(32768, 100);
 
         for _ in 0..to_download_total.len()  {
             let response = async_parse_request(&mut stream).await?;
@@ -162,7 +165,6 @@ pub async fn start_communication(server: &str, origin_path: &str) -> std::io::Re
                 Err(err) => eprintln!("Error passing a file request to the unpacking task: {}", err),
             };
 
-
             loop {
                 let response = async_parse_request(&mut stream).await?;
 
@@ -170,9 +172,9 @@ pub async fn start_communication(server: &str, origin_path: &str) -> std::io::Re
                     RequestType::EndFile => break,
                     RequestType::Chunk => {
                         let to_read = *response.get_body_size();
-                        let mut buffer = vec![0u8; to_read];
-                        stream.read_exact(&mut buffer).await?;
-                        let to_send = Body::Content(buffer);
+                        let mut lease = bufferpool.lease();
+                        stream.read_exact(&mut lease[..to_read]).await?;
+                        let to_send = Body::Content((lease, to_read));
                         tx.send(to_send).await.map_err(|err| {
                             io::Error::new(io::ErrorKind::InvalidData, err.to_string())
                         })?;
@@ -204,7 +206,7 @@ pub async fn start_communication(server: &str, origin_path: &str) -> std::io::Re
 
 enum Body {
     StartFile(String),
-    Content(Vec<u8>),
+    Content((BufferLease, usize)),
     FileDone,
 }
 
