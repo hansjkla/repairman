@@ -81,7 +81,7 @@ async fn handle_connection(mut stream: TcpStream, hashes: Arc<Vec<u8>>, cache_pa
                     Err(_) => return Err(io::Error::new(io::ErrorKind::InvalidData, "Couldn't convert body to string.")),
                 };
 
-                let mut buffer = vec![0u8; 8192];
+                let mut buffer = vec![0u8; 32768];
                 let mut compression_buffer = Vec::new();
 
                 for file in files.lines() {
