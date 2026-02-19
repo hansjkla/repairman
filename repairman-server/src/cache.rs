@@ -11,7 +11,7 @@ use file_hashing::get_hash_file;
 
 use repairman_common::*;
 
-pub fn parse_cache(path: &Path, files: &[HashedFile]) -> io::Result<()> {
+pub fn parse_cache(path: &Path, files: &[HashedFile]) -> io::Result<HashMap<String, String>> {
     let inventory_file = path.join(Path::new("inventory.compmeta"));
 
     if !inventory_file.exists() {
@@ -42,6 +42,7 @@ pub fn parse_cache(path: &Path, files: &[HashedFile]) -> io::Result<()> {
 
     let mut buffer = vec![0u8; 8192];
     let mut cache_was_invalid = false;
+    let mut paths_map = HashMap::with_capacity(files.len());
 
     for file in files {
         let mut file_has_to_be_redone = false;
@@ -56,6 +57,8 @@ pub fn parse_cache(path: &Path, files: &[HashedFile]) -> io::Result<()> {
         let compressed_file_exists = path_to_cmp.exists();
 
         let path_to_cmp = path_to_cmp.to_str().unwrap();
+
+        paths_map.insert(file.get_path().to_string(), path_to_cmp.to_string());
 
         let hashedfile_to_cmp = HashedFile::new(path_to_cmp, file.get_hash());
 
@@ -122,17 +125,17 @@ pub fn parse_cache(path: &Path, files: &[HashedFile]) -> io::Result<()> {
         fs::write(path.join(Path::new("inventory.compmeta")), metadata)?;
     }
 
-    Ok(())
+    Ok(paths_map)
 }
 
 thread_local! {
     static THEAD_BUFFER: RefCell<Vec<u8>> = RefCell::new(vec![0u8; 8192]);
 }
 
-pub fn create_cache(path: &Path, files: &[HashedFile]) -> io::Result<()> {
+pub fn create_cache(path: &Path, files: &[HashedFile]) -> io::Result<HashMap<String, String>> {
     fs::create_dir_all(path)?;
 
-    let lines: Vec<io::Result<String>> = files.par_iter().map(|f| {
+    let cache_parts: Vec<io::Result<ChachePart>> = files.par_iter().map(|f| {
         let mut file_handle = fs::File::open(f.get_path())?;
         let path = path.join(Path::new("files")).join(f.get_path());
 
@@ -166,17 +169,38 @@ pub fn create_cache(path: &Path, files: &[HashedFile]) -> io::Result<()> {
         let compressed_file_hash = get_hash_file(&path, &mut hasher)
             .map_err(|e| io::Error::new(e.kind(), format!("Failed to hash {:?}: {}", &path, e)))?;
 
-        Ok(format!("{}\0{}\0{}\0", path.to_str().unwrap(), f.get_hash(), compressed_file_hash))
+        let path = match path.to_str() {
+            Some(p) => p,
+            None => return Err(io::Error::new(io::ErrorKind::AddrInUse, "")),
+        };
+
+        Ok(ChachePart::new(format!("{}\0{}\0{}\0", path, f.get_hash(), compressed_file_hash), f.get_path().to_string(), path.to_string()))
     }).collect();
 
-    let mut metadata = String::with_capacity(264 * lines.len());
+    let mut metadata = String::with_capacity(264 * cache_parts.len());
+    let mut paths_map = HashMap::with_capacity(cache_parts.len());
 
-    for line in lines {
-        let line = line?;
-        metadata.push_str(&line);
+    for part in cache_parts {
+        let part = part?;
+        metadata.push_str(&part.compmeta_line);
+        paths_map.insert(part.uncompressed_path, part.compressed_path);
     }
 
     fs::write(path.join(Path::new("inventory.compmeta")), metadata)?;
 
-    Ok(())
+    Ok(paths_map)
+}
+
+struct ChachePart {
+    compmeta_line: String,
+    uncompressed_path: String,
+    compressed_path: String,
+}
+
+impl ChachePart {
+    fn new(compmeta_line: String,
+    uncompressed_path: String,
+    compressed_path: String,) -> ChachePart {
+        ChachePart { compmeta_line, uncompressed_path, compressed_path }
+    }
 }
