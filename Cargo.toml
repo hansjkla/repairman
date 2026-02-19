@@ -14,12 +14,12 @@ repository = "https://github.com/hansjkla/repairman"
 file-hashing = "0.1.2"
 blake2 = "0.10"
 digest = "0.10"
-flate2 = "=1.1.8"
+flate2 = "=1.1.9"
 miniz_oxide = "=0.9.0"
 crc32fast = "=1.5.0"
 rayon = "1.11.0"
 tokio = { version = "1.49.0", features = ["full"] }
-clap = { version = "=4.5.56", features = ["derive"]}
+clap = { version = "=4.5.60", features = ["derive"]}
 repairman-common = { path = "./repairman-common" }
 
 [workspace.lints.rust]
