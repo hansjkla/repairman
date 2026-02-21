@@ -143,7 +143,7 @@ pub async fn start_communication(server: &str, origin_path: &str) -> std::io::Re
                 continue;
             }
 
-            let mut file_name_buffer = vec![0u8; *response.get_file_name_size()];
+            let mut file_name_buffer = vec![0u8; *response.get_body_size()];
 
             stream.read_exact(&mut file_name_buffer).await?;
 
@@ -196,7 +196,7 @@ pub async fn start_communication(server: &str, origin_path: &str) -> std::io::Re
         loop_iter += 1;
     }
 
-    let disconnect_header = create_header(RequestVersion::ZEROpOne, RequestType::Disconnect, 0, 0);
+    let disconnect_header = create_header(RequestVersion::ZEROpOne, RequestType::Disconnect, 0);
     stream.write_all(&disconnect_header).await?;
 
     Ok(())
@@ -209,7 +209,7 @@ enum Body {
 }
 
 async fn request_hashes(stream: &mut TcpStream) -> io::Result<()> {
-    let header = create_header(RequestVersion::ZEROpOne, RequestType::GetHashes, 0, 0);
+    let header = create_header(RequestVersion::ZEROpOne, RequestType::GetHashes, 0);
 
     stream.write_all(&header).await?;
 
@@ -270,7 +270,7 @@ async fn request_files(stream: &mut TcpStream, checked_files: &[(&HashedFile, Fi
         .collect();
 
     let body_size = body.len() as u32;
-    let header = create_header(RequestVersion::ZEROpOne, RequestType::GetFiles, 0, body_size);
+    let header = create_header(RequestVersion::ZEROpOne, RequestType::GetFiles, body_size);
 
     stream.write_all(&header).await?;
     stream.write_all(body.as_bytes()).await?;

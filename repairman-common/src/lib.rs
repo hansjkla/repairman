@@ -30,12 +30,14 @@ impl HashedFile {
 #[derive(PartialEq)]
 pub enum RequestVersion {
     ZEROpOne,
+    ZEROpTwo,
 }
 
 impl core::fmt::Display for RequestVersion {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             RequestVersion::ZEROpOne => write!(f, "0.1"),
+            RequestVersion::ZEROpTwo => write!(f, "0.2"),
         } 
     }
 }
@@ -68,14 +70,12 @@ impl core::fmt::Display for RequestType {
 pub struct Request {
     version: RequestVersion,
     request_type: RequestType,
-    file_name_size: usize,
     body_size: usize,
 }
 
 impl Request {
-    pub fn new(version: RequestVersion, request_type: RequestType,
-            file_name_size: usize, body_size: usize) -> Request {
-        Request { version, request_type, file_name_size, body_size }
+    pub fn new(version: RequestVersion, request_type: RequestType, body_size: usize) -> Request {
+        Request { version, request_type, body_size }
     }
 
     pub fn get_version(&self) -> &RequestVersion {
@@ -86,10 +86,6 @@ impl Request {
         &self.request_type
     }
 
-    pub fn get_file_name_size(&self) -> &usize {
-        &self.file_name_size
-    }
-
     pub fn get_body_size(&self) -> &usize {
         &self.body_size
     }
@@ -97,7 +93,7 @@ impl Request {
 
 impl core::fmt::Display for Request {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Version: {}\nType: {}\nFile name size: {}\nBody size: {}", self.get_version(), self.get_type(), self.get_file_name_size(), self.get_body_size())
+        write!(f, "Version: {}\nType: {}\nBody size: {}", self.get_version(), self.get_type(), self.get_body_size())
     }
 }
 
@@ -118,13 +114,14 @@ impl core::fmt::Display for FileState {
     }
 }
 
-pub fn create_header(version: RequestVersion, reqeuest_type: RequestType, file_name_size: u32, body_size: u32) -> [u8; 64] {
+pub fn create_header(version: RequestVersion, reqeuest_type: RequestType, body_size: u32) -> [u8; 64] {
     let mut buffer = [0u8; 64];
 
-    let mut header_text = String::from("repairman ");
+    let mut header_text = String::from("repairman|");
     
     match version {
-        RequestVersion::ZEROpOne => header_text.push_str("0.1 "),
+        RequestVersion::ZEROpOne => header_text.push_str("0.1|"),
+        RequestVersion::ZEROpTwo => header_text.push_str("0.2|"),
     }
 
     match reqeuest_type {
@@ -142,7 +139,6 @@ pub fn create_header(version: RequestVersion, reqeuest_type: RequestType, file_n
     let len = bytes.len().min(56);
     buffer[..len].copy_from_slice(&bytes[..len]);
 
-    buffer[56..60].copy_from_slice(&file_name_size.to_be_bytes());
     buffer[60..64].copy_from_slice(&body_size.to_be_bytes());
 
     buffer
@@ -155,45 +151,31 @@ pub async fn async_parse_request(stream: &mut tokio::net::TcpStream) -> std::io:
     stream.read_exact(&mut header).await?;
 
     let body_size = u32::from_be_bytes(header[60..64].try_into().map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidData, "Couldn't read out body size from header."))?) as usize;
-    let file_name_size = u32::from_be_bytes(header[56..60].try_into().map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidData, "Couldn't read out file name size from header."))?) as usize;
 
-    let request_line = String::from_utf8_lossy(&header[0..56]);
-    let request_line = request_line.trim_matches(char::from(0));
+    let raw_string = String::from_utf8_lossy(&header[0..56]);
+    let trimmed_string = raw_string.trim_matches(char::from(0));
+    let parts: Vec<&str> = trimmed_string.split("|").collect();
 
-    let mut sperate = request_line.split(" ");
-
-    if let Some(name) = sperate.next() {
-        if name != "repairman" {
-            return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "Protocol name invalid."));
-        }
-    } else {
+    if parts.len() < 3 || parts[0] != "repairman" {
         return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "Header is empty."));
     }
 
-    let version = match sperate.next() {
-        Some("0.1") => RequestVersion::ZEROpOne,
-        _ => return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "Version in header is wrong.")),
+    let version = match parts[1] {
+        "0.1" => RequestVersion::ZEROpOne,
+        "0.2" => RequestVersion::ZEROpTwo,
+        _ => return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "Header is empty.")),
     };
 
-    let request_type = match sperate.next() {
-        Some(t) => {
-            match t {
-                "GIVE-HASHES" => RequestType::GiveHashes,
-                "GIVE-FILES" => RequestType::GiveFiles,
-                "GET-HASHES" => return Ok(Request::new(version, RequestType::GetHashes, 0, 0)),
-                "GET-FILES" => RequestType::GetFiles,
-                "CHUNK" => RequestType::Chunk,
-                "END-FILE" => RequestType::EndFile,
-                "DISCONNECT" => RequestType::Disconnect,
-                _ => return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid request type was recieved.")),
-            }
-        }
-        None => return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "Header incomplete, request type wasn't recieved.")),
+    let request_type = match parts[2] {
+        "GIVE-HASHES" => RequestType::GiveHashes,
+        "GIVE-FILES" => RequestType::GiveFiles,
+        "GET-HASHES" => return Ok(Request::new(version, RequestType::GetHashes,0)),
+        "GET-FILES" => RequestType::GetFiles,
+        "CHUNK" => RequestType::Chunk,
+        "END-FILE" => RequestType::EndFile,
+        "DISCONNECT" => RequestType::Disconnect,
+        _ => return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid request type was recieved.")),
     };
 
-    if request_type == RequestType::GiveHashes {
-        return Ok(Request::new(version, request_type, 0, body_size));
-    }
-
-    Ok(Request::new(version, request_type, file_name_size, body_size))
+    Ok(Request::new(version, request_type, body_size))
 }

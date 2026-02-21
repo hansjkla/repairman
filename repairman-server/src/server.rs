@@ -24,7 +24,7 @@ pub async fn run_server(files: &[HashedFile], addr: &str, cache: Option<String>)
     }
 
     let body_size = body.len() as u32;
-    let header = create_header(RequestVersion::ZEROpOne, RequestType::GiveHashes, 0, body_size);
+    let header = create_header(RequestVersion::ZEROpOne, RequestType::GiveHashes, body_size);
 
     let mut hashes = Vec::with_capacity(body.len() + header.len());
     hashes.extend_from_slice(&header);
@@ -86,7 +86,7 @@ async fn handle_connection(mut stream: TcpStream, hashes: Arc<Vec<u8>>, paths_ma
                 for file in files.lines() {
                     let file_name_len = file.len() as u32;
 
-                    let header = create_header(RequestVersion::ZEROpOne, RequestType::GiveFiles, file_name_len, 0);
+                    let header = create_header(RequestVersion::ZEROpOne, RequestType::GiveFiles, file_name_len);
 
                     stream.write_all(&header).await?;
                     stream.write_all(file.as_bytes()).await?;
@@ -103,12 +103,12 @@ async fn handle_connection(mut stream: TcpStream, hashes: Arc<Vec<u8>>, paths_ma
                             let n = file_handle.read(&mut buffer).await?;
                             if n == 0 { break; }
 
-                            let header = create_header(RequestVersion::ZEROpOne, RequestType::Chunk, 0, n as u32);
+                            let header = create_header(RequestVersion::ZEROpOne, RequestType::Chunk, n as u32);
                             stream.write_all(&header).await?;
                             stream.write_all(&buffer[..n]).await?;
                         }
 
-                        let end_header = create_header(RequestVersion::ZEROpOne, RequestType::EndFile, 0, 0);
+                        let end_header = create_header(RequestVersion::ZEROpOne, RequestType::EndFile, 0);
                         stream.write_all(&end_header).await?;
 
                     } else {
@@ -123,7 +123,7 @@ async fn handle_connection(mut stream: TcpStream, hashes: Arc<Vec<u8>>, paths_ma
                             let compressed_data = encoder.get_mut();
 
                             if !compressed_data.is_empty() {
-                                let chunk_header = create_header(RequestVersion::ZEROpOne, RequestType::Chunk, 0, compressed_data.len() as u32);
+                                let chunk_header = create_header(RequestVersion::ZEROpOne, RequestType::Chunk, compressed_data.len() as u32);
                                 stream.write_all(&chunk_header).await?;
                                 stream.write_all(compressed_data).await?;
 
@@ -133,12 +133,12 @@ async fn handle_connection(mut stream: TcpStream, hashes: Arc<Vec<u8>>, paths_ma
 
                         let final_compressed_data = encoder.finish()?;
                         if !final_compressed_data.is_empty() {
-                            let chunk_header = create_header(RequestVersion::ZEROpOne, RequestType::Chunk, 0, final_compressed_data.len() as u32);
+                            let chunk_header = create_header(RequestVersion::ZEROpOne, RequestType::Chunk, final_compressed_data.len() as u32);
                             stream.write_all(&chunk_header).await?;
                             stream.write_all(final_compressed_data).await?;
                         }
 
-                        let end_header = create_header(RequestVersion::ZEROpOne, RequestType::EndFile, 0, 0);
+                        let end_header = create_header(RequestVersion::ZEROpOne, RequestType::EndFile, 0);
                         stream.write_all(&end_header).await?;
 
                         compression_buffer.clear();
