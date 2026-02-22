@@ -20,7 +20,7 @@ pub async fn run_server(files: &[HashedFile], addr: &str, cache: Option<String>)
     // Create the GIVE-HASHES response to reuse, body contains "file_name hash" on sperated lines
     let mut body = String::new();
     for file in files {
-        body.push_str(format!("{} {}\n", file.get_path(), file.get_hash()).as_str());
+        body.push_str(format!("{}\0{}\0", file.get_path(), file.get_hash()).as_str());
     }
 
     let body_size = body.len() as u32;
@@ -31,6 +31,8 @@ pub async fn run_server(files: &[HashedFile], addr: &str, cache: Option<String>)
     hashes.extend_from_slice(body.as_bytes());
 
     let hashes = Arc::new(hashes);
+
+    // Check for cache option and create map of origin_path -> compressed file path
     let mut paths_map = None;
 
     if let Some(ref path) = cache {
@@ -83,7 +85,9 @@ async fn handle_connection(mut stream: TcpStream, hashes: Arc<Vec<u8>>, paths_ma
                 let mut buffer = vec![0u8; 32768];
                 let mut compression_buffer = Vec::new();
 
-                for file in files.lines() {
+                let files: Vec<&str> = files.split("\0").filter(|f| !f.is_empty()).collect();
+
+                for file in files {
                     let file_name_len = file.len() as u32;
 
                     let header = create_header(RequestVersion::ZEROpOne, RequestType::GiveFiles, file_name_len);

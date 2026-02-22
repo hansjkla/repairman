@@ -36,27 +36,24 @@ pub async fn start_communication(server: &str, origin_path: &str) -> std::io::Re
 
     stream.read_exact(&mut body).await?;
 
+
     let body = match str::from_utf8(&body) {
         Ok(b) => b,
         Err(_) => return Err(io::Error::new(io::ErrorKind::InvalidData, "Couldn't turn response body into string.")),
     };
 
-    let lines = body.lines();
 
-    for line in lines {
-        let mut part = line.split(' ');
-                
-        let path = match part.next() {
-            Some(p) => p,
-            None => return Err(io::Error::new(io::ErrorKind::InvalidData, "Responses body contains invalid path.")),
-        };
+    let parts: Vec<&str> = body.split("\0").collect();
 
-        let hash = match part.next() {
-            Some(h) => h,
-            None => return Err(io::Error::new(io::ErrorKind::InvalidData, "Responses body contains invalid hash.")),
-        };
+    if parts.len().is_multiple_of(2) {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "Responses body contains invalid form."));
+    }
 
-        file_list.push(HashedFile::new(path, hash));
+    for i in 0..(parts.len() / 2) {
+        file_list.push(HashedFile::new(
+            parts[i * 2],
+            parts[i * 2 + 1]
+        ));
     }
 
     let mut loop_iter = 0;
@@ -265,7 +262,7 @@ async fn request_files(stream: &mut TcpStream, checked_files: &[(&HashedFile, Fi
             false
         })
         .map(|f| {
-            format!("{}\n", f.0.get_path())
+            format!("{}\0", f.0.get_path())
         })
         .collect();
 

@@ -31,6 +31,7 @@ impl HashedFile {
 pub enum RequestVersion {
     ZEROpOne,
     ZEROpTwo,
+    ZEROpThree,
 }
 
 impl core::fmt::Display for RequestVersion {
@@ -38,6 +39,7 @@ impl core::fmt::Display for RequestVersion {
         match self {
             RequestVersion::ZEROpOne => write!(f, "0.1"),
             RequestVersion::ZEROpTwo => write!(f, "0.2"),
+            RequestVersion::ZEROpThree => write!(f, "0.3"),
         } 
     }
 }
@@ -122,6 +124,7 @@ pub fn create_header(version: RequestVersion, reqeuest_type: RequestType, body_s
     match version {
         RequestVersion::ZEROpOne => header_text.push_str("0.1|"),
         RequestVersion::ZEROpTwo => header_text.push_str("0.2|"),
+        RequestVersion::ZEROpThree => header_text.push_str("0.3|"),
     }
 
     match reqeuest_type {
@@ -163,13 +166,14 @@ pub async fn async_parse_request(stream: &mut tokio::net::TcpStream) -> std::io:
     let version = match parts[1] {
         "0.1" => RequestVersion::ZEROpOne,
         "0.2" => RequestVersion::ZEROpTwo,
+        "0.3" => RequestVersion::ZEROpThree,
         _ => return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "Header is empty.")),
     };
 
     let request_type = match parts[2] {
         "GIVE-HASHES" => RequestType::GiveHashes,
         "GIVE-FILES" => RequestType::GiveFiles,
-        "GET-HASHES" => return Ok(Request::new(version, RequestType::GetHashes,0)),
+        "GET-HASHES" => RequestType::GetHashes,
         "GET-FILES" => RequestType::GetFiles,
         "CHUNK" => RequestType::Chunk,
         "END-FILE" => RequestType::EndFile,
