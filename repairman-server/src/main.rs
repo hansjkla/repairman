@@ -38,11 +38,11 @@ async fn main() {
         },
     };
 
-    for item in &list {
-        println!("{}", item);
+    for (id, file) in &list {
+        println!("{} {}", *id, file);
     }
 
-    match run_server(&list, &format!("{}:{}", args.address, args.port), args.cache).await {
+    match run_server(list, &format!("{}:{}", args.address, args.port), args.cache).await {
         Ok(_) => (),
         Err(e) => {
             eprintln!("{e}");

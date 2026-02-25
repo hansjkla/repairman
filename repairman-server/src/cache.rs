@@ -11,7 +11,7 @@ use file_hashing::get_hash_file;
 
 use repairman_common::*;
 
-pub fn parse_cache(path: &Path, files: &[HashedFile]) -> io::Result<HashMap<String, String>> {
+pub fn parse_cache(path: &Path, files: &HashMap<u32, HashedFile>) -> io::Result<HashMap<u32, String>> {
     let inventory_file = path.join(Path::new("inventory.compmeta"));
 
     if !inventory_file.exists() {
@@ -44,7 +44,7 @@ pub fn parse_cache(path: &Path, files: &[HashedFile]) -> io::Result<HashMap<Stri
     let mut cache_was_invalid = false;
     let mut paths_map = HashMap::with_capacity(files.len());
 
-    for file in files {
+    for (id, file) in files {
         let mut file_has_to_be_redone = false;
         
         let path_to_cmp = path.join("files").join(file.get_path());
@@ -58,7 +58,7 @@ pub fn parse_cache(path: &Path, files: &[HashedFile]) -> io::Result<HashMap<Stri
 
         let path_to_cmp = path_to_cmp.to_str().unwrap();
 
-        paths_map.insert(file.get_path().to_string(), path_to_cmp.to_string());
+        paths_map.insert(*id, path_to_cmp.to_string());
 
         let hashedfile_to_cmp = HashedFile::new(path_to_cmp, file.get_hash());
 
@@ -100,7 +100,7 @@ pub fn parse_cache(path: &Path, files: &[HashedFile]) -> io::Result<HashMap<Stri
         println!("Cache was invalid, redoing the metadata file.");
         let mut metadata = String::with_capacity(264 * files.len());
 
-        let results: Vec<io::Result<String>> = files.par_iter().map(|f| {
+        let results: Vec<io::Result<String>> = files.par_iter().map(|(_id, f)| {
             let path = path.join("files").join(f.get_path());
             let mut os_file_path = path.into_os_string();
             os_file_path.push(".comp");
@@ -132,10 +132,10 @@ thread_local! {
     static THEAD_BUFFER: RefCell<Vec<u8>> = RefCell::new(vec![0u8; 8192]);
 }
 
-pub fn create_cache(path: &Path, files: &[HashedFile]) -> io::Result<HashMap<String, String>> {
+pub fn create_cache(path: &Path, files: &HashMap<u32, HashedFile>) -> io::Result<HashMap<u32, String>> {
     fs::create_dir_all(path)?;
 
-    let cache_parts: Vec<io::Result<ChachePart>> = files.par_iter().map(|f| {
+    let cache_parts: Vec<io::Result<ChachePart>> = files.par_iter().map(|(id, f)| {
         let mut file_handle = fs::File::open(f.get_path())?;
         let path = path.join(Path::new("files")).join(f.get_path());
 
@@ -174,7 +174,7 @@ pub fn create_cache(path: &Path, files: &[HashedFile]) -> io::Result<HashMap<Str
             None => return Err(io::Error::new(io::ErrorKind::AddrInUse, "")),
         };
 
-        Ok(ChachePart::new(format!("{}\0{}\0{}\0", path, f.get_hash(), compressed_file_hash), f.get_path().to_string(), path.to_string()))
+        Ok(ChachePart::new(format!("{}\0{}\0{}\0", path, f.get_hash(), compressed_file_hash), *id, path.to_string()))
     }).collect();
 
     let mut metadata = String::with_capacity(264 * cache_parts.len());
@@ -183,7 +183,7 @@ pub fn create_cache(path: &Path, files: &[HashedFile]) -> io::Result<HashMap<Str
     for part in cache_parts {
         let part = part?;
         metadata.push_str(&part.compmeta_line);
-        paths_map.insert(part.uncompressed_path, part.compressed_path);
+        paths_map.insert(part.id, part.compressed_path);
     }
 
     fs::write(path.join(Path::new("inventory.compmeta")), metadata)?;
@@ -193,14 +193,14 @@ pub fn create_cache(path: &Path, files: &[HashedFile]) -> io::Result<HashMap<Str
 
 struct ChachePart {
     compmeta_line: String,
-    uncompressed_path: String,
+    id: u32,
     compressed_path: String,
 }
 
 impl ChachePart {
     fn new(compmeta_line: String,
-    uncompressed_path: String,
+    id: u32,
     compressed_path: String,) -> ChachePart {
-        ChachePart { compmeta_line, uncompressed_path, compressed_path }
+        ChachePart { compmeta_line, id, compressed_path }
     }
 }

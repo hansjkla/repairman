@@ -1,13 +1,11 @@
 use std::{
-    fs::{self, File},
-    io::{self, Write},
-    path::Path,
+    collections::HashMap, fs::{self, File}, io::{self, Write}, path::Path
 };
 
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 
 use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt}, net::*, sync::mpsc, task
+    io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt}, net::*, sync::mpsc, task
 };
 
 
@@ -22,7 +20,6 @@ use repairman_common::*;
 pub async fn start_communication(server: &str, origin_path: &str) -> std::io::Result<()> {
     
     let mut stream = tokio::net::TcpStream::connect(format!("{server}:6767")).await?;
-    let mut file_list = Vec::new();
 
     request_hashes(&mut stream).await?;
 
@@ -32,30 +29,46 @@ pub async fn start_communication(server: &str, origin_path: &str) -> std::io::Re
         return Err(io::Error::new(io::ErrorKind::InvalidData, "Response isn't file hashes."));
     }
 
-    let mut body = vec![0u8; *response.get_body_size()];
+    let mut file_list: HashMap<u32, HashedFile> = HashMap::new();
+    let mut reader = tokio::io::BufReader::new(&mut stream);
+    let mut buffer = Vec::new();
 
-    stream.read_exact(&mut body).await?;
+    let file_count = reader.read_u32().await?;
+    println!("file_count: {file_count}");
+
+    for _ in 0..file_count {
+        let id = reader.read_u32().await?;
+
+        buffer.clear();
+        let n = reader.read_until(b'\0', &mut buffer).await?;
+
+        if buffer.last() == Some(&b'\0') {
+            buffer.pop();
+        }
 
 
-    let body = match str::from_utf8(&body) {
-        Ok(b) => b,
-        Err(_) => return Err(io::Error::new(io::ErrorKind::InvalidData, "Couldn't turn response body into string.")),
-    };
+        let path = match str::from_utf8(&buffer[..(n - 1)]) {
+            Ok(f) => f,
+            Err(err) => {
+                eprintln!("Error passing a file request to the unpacking task: {}", err);
+                continue;
+            },
+        };
 
+        let mut hash_buffer = vec![0u8; 64];
+        reader.read_exact(&mut hash_buffer).await?;
+        let hash = match str::from_utf8(&hash_buffer) {
+            Ok(f) => f,
+            Err(err) => {
+                eprintln!("Error passing a file request to the unpacking task: {}", err);
+                continue;
+            },
+        };
 
-    let parts: Vec<&str> = body.split("\0").collect();
-
-    if parts.len().is_multiple_of(2) {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "Responses body contains invalid form."));
+        file_list.insert(id, HashedFile::new(path, hash));
     }
 
-    for i in 0..(parts.len() / 2) {
-        file_list.push(HashedFile::new(
-            parts[i * 2],
-            parts[i * 2 + 1]
-        ));
-    }
-
+    println!("Stating checking...");
     let mut loop_iter = 0;
 
     loop {
@@ -64,25 +77,17 @@ pub async fn start_communication(server: &str, origin_path: &str) -> std::io::Re
             None => return Err(io::Error::new(io::ErrorKind::InvalidData, "Error checking the files against hashes.")),
         };
 
-        for file in &checked_files {
-            println!("{}  {}", file.0.get_path(), file.1);
+        for (id, state) in &checked_files {
+            println!("{}  {}", id, state);
         }
         println!(" ");
         
-        request_files(&mut stream, &checked_files).await?;
+        let to_download_total = request_files(&mut stream, &checked_files).await?;
 
-        let to_download_total: Vec<&(&HashedFile, FileState)> = checked_files.par_iter()
-            .filter(|f| {
-                if f.1 != FileState::Present {
-                    return true;
-                }
-                false
-            }).collect();
-
-        if to_download_total.is_empty() {
+        if to_download_total == 0 {
             break;
         } else if loop_iter == 3 {
-            eprintln!("Still incorrect files, after third download attempt, existing.");
+            eprintln!("Still incorrect files, after third download attempt, exiting.");
             break;
         }
 
@@ -133,26 +138,28 @@ pub async fn start_communication(server: &str, origin_path: &str) -> std::io::Re
         });
 
 
-        for _ in 0..to_download_total.len()  {
+        for _ in 0..to_download_total  {
             let response = async_parse_request(&mut stream).await?;
 
             if response.get_type() != &RequestType::GiveFiles {
                 continue;
             }
 
-            let mut file_name_buffer = vec![0u8; *response.get_body_size()];
+            // let mut file_name_buffer = vec![0u8; *response.get_body_size()];
 
-            stream.read_exact(&mut file_name_buffer).await?;
+            // stream.read_exact(&mut file_name_buffer).await?;
 
-            let file_name = match String::from_utf8(file_name_buffer) {
-                Ok(f) => f,
-                Err(err) => {
-                    eprintln!("Error passing a file request to the unpacking task: {}", err);
+            let current_id = stream.read_u32().await?;
+
+            let file_path = match file_list.get(&current_id) {
+                Some(p) => p,
+                None => {
+                    eprintln!("An invalid ID was send from the server, skipping file.");
                     continue;
                 },
             };
 
-            let name = Body::StartFile(file_name);
+            let name = Body::StartFile(file_path.get_path().to_string());
 
             match tx.send(name).await {
                 Ok(_) => (),
@@ -214,34 +221,34 @@ async fn request_hashes(stream: &mut TcpStream) -> io::Result<()> {
 }
 
 
-fn check_files<'a>(path: &Path, files: &'a [HashedFile]) -> Option<Vec<(&'a HashedFile, FileState)>> {
+fn check_files(path: &Path, files: &HashMap<u32, HashedFile>) -> Option<Vec<(u32, FileState)>> {
     if !path.exists() {
-        let list:Vec<(&HashedFile, FileState)> = files.par_iter().map(|f| {
-            (f, FileState::Missing)
+        let list:Vec<(u32, FileState)> = files.par_iter().map(|(id, _)| {
+            (*id, FileState::Missing)
         }).collect();
 
         return Some(list);
     }
 
     if path.is_dir() {
-        let list2: Vec<(&HashedFile, FileState)> = files.par_iter().map(|entry| { 
-            let full_path = path.join(entry.get_path());
+        let list2: Vec<(u32, FileState)> = files.par_iter().map(|(id, file)| { 
+            let full_path = path.join(file.get_path());
 
             if !full_path.exists() {
-                return (entry, FileState::Missing);
+                return (*id, FileState::Missing);
             }
 
             let mut hasher = Blake2s256::new();
 
             let file_hash = match get_hash_file(&full_path, &mut hasher) {
                 Ok(r) => r,
-                Err(_) => return (entry, FileState::Missing),
+                Err(_) => return (*id, FileState::Missing),
             };
 
-            if file_hash == entry.get_hash() {
-                (entry, FileState::Present)
+            if file_hash == file.get_hash() {
+                (*id, FileState::Present)
             } else {
-                (entry, FileState::Corrupted)
+                (*id, FileState::Corrupted)
             }
          }).collect();
 
@@ -253,24 +260,31 @@ fn check_files<'a>(path: &Path, files: &'a [HashedFile]) -> Option<Vec<(&'a Hash
     None
 }
 
-async fn request_files(stream: &mut TcpStream, checked_files: &[(&HashedFile, FileState)]) -> std::io::Result<()> {
-    let body: String = checked_files.par_iter()
-        .filter(|f| {
-            if f.1 != FileState::Present {
+async fn request_files(stream: &mut TcpStream, checked_files: &[(u32, FileState)]) -> std::io::Result<usize> {
+    let mut missing_amount: usize = 0;
+
+    let body: Vec<u8> = checked_files.iter()
+        .filter(|(_, state)| {
+            if *state != FileState::Present {
+                missing_amount += 1;
                 return true;
             }
             false
         })
-        .map(|f| {
-            format!("{}\0", f.0.get_path())
+        .flat_map(|(id, _)| {
+            id.to_be_bytes()
         })
-        .collect();
+    .collect();
+
+    if body.is_empty() {
+        return Ok(missing_amount);
+    }
 
     let body_size = body.len() as u32;
     let header = create_header(RequestVersion::ZEROpOne, RequestType::GetFiles, body_size);
 
     stream.write_all(&header).await?;
-    stream.write_all(body.as_bytes()).await?;
+    stream.write_all(&body).await?;
 
-    Ok(())
+    Ok(missing_amount)
 }

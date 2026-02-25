@@ -14,36 +14,48 @@ use flate2::{Compression, write::DeflateEncoder};
 use crate::cache::*;
 use repairman_common::*;
 
-pub async fn run_server(files: &[HashedFile], addr: &str, cache: Option<String>) -> std::io::Result<()> {
+pub async fn run_server(files: HashMap<u32, HashedFile>, addr: &str, cache: Option<String>) -> std::io::Result<()> {
     let listener = TcpListener::bind(addr).await?;
 
     // Create the GIVE-HASHES response to reuse, body contains "file_name hash" on sperated lines
-    let mut body = String::new();
-    for file in files {
-        body.push_str(format!("{}\0{}\0", file.get_path(), file.get_hash()).as_str());
+    // let mut body = String::new();
+    let mut body: Vec<u8> = Vec::new();
+    body.extend_from_slice(&(files.len() as u32).to_be_bytes());
+
+    for (id, file) in &files {
+        body.extend_from_slice(&(*id).to_be_bytes());
+        body.extend_from_slice(format!("{}\0{}", file.get_path(), file.get_hash()).as_bytes());
     }
+
 
     let body_size = body.len() as u32;
     let header = create_header(RequestVersion::ZEROpOne, RequestType::GiveHashes, body_size);
 
     let mut hashes = Vec::with_capacity(body.len() + header.len());
     hashes.extend_from_slice(&header);
-    hashes.extend_from_slice(body.as_bytes());
+    hashes.extend_from_slice(&body);
+
 
     let hashes = Arc::new(hashes);
 
     // Check for cache option and create map of origin_path -> compressed file path
-    let mut paths_map = None;
+    let mut paths_map = HashMap::with_capacity(files.len());
+    let mut cache_on = false;
 
     if let Some(ref path) = cache {
         let path = Path::new(&path);
         if path.exists() {
-            paths_map = Some(parse_cache(path, files)?);
+            paths_map = parse_cache(path, &files)?;
         } else {
-            paths_map = Some(create_cache(path, files)?);
+            paths_map = create_cache(path, &files)?;
         }
+        cache_on = true;
 
         println!("Caching done...\nListening now");
+    } else {
+        for (id, file) in files {
+            paths_map.insert(id, file.get_path().to_string());
+        }
     }
 
     let paths_map = Arc::new(paths_map);
@@ -56,7 +68,7 @@ pub async fn run_server(files: &[HashedFile], addr: &str, cache: Option<String>)
 
         
         tokio::spawn(async move {
-            handle_connection(stream, hashes_clone, clone_paths_map).await.unwrap_or_else(|err| {
+            handle_connection(stream, hashes_clone, cache_on,  clone_paths_map).await.unwrap_or_else(|err| {
                 eprintln!("Error handeling a connection: {err}");
             });
         });
@@ -65,7 +77,7 @@ pub async fn run_server(files: &[HashedFile], addr: &str, cache: Option<String>)
     // Ok(())
 }
 
-async fn handle_connection(mut stream: TcpStream, hashes: Arc<Vec<u8>>, paths_map: Arc<Option<HashMap<String, String>>>) -> std::io::Result<()> {
+async fn handle_connection(mut stream: TcpStream, hashes: Arc<Vec<u8>>, cache_on: bool, paths_map: Arc<HashMap<u32, String>>) -> std::io::Result<()> {
     loop {
         let request = async_parse_request(&mut stream).await?;
 
@@ -77,30 +89,35 @@ async fn handle_connection(mut stream: TcpStream, hashes: Arc<Vec<u8>>, paths_ma
             RequestType::GetFiles => {
                 let mut files = vec![0u8; *request.get_body_size()];
                 stream.read_exact(&mut files).await?;
-                let files = match str::from_utf8(&files) {
-                    Ok(f) => f,
-                    Err(_) => return Err(io::Error::new(io::ErrorKind::InvalidData, "Couldn't convert body to string.")),
-                };
+
+                let ids: Vec<u32> = files.chunks_exact(4).map(|c| {
+                    u32::from_be_bytes(c.try_into().unwrap())
+                }).collect();
+
+                if !files.chunks_exact(4).remainder().is_empty() {
+                    return Err(io::Error::new(io::ErrorKind::InvalidData, "Couldn't convert body to IDs."));
+                }
+
+                dbg!(&ids);
+
 
                 let mut buffer = vec![0u8; 32768];
                 let mut compression_buffer = Vec::new();
 
-                let files: Vec<&str> = files.split("\0").filter(|f| !f.is_empty()).collect();
 
-                for file in files {
-                    let file_name_len = file.len() as u32;
+                for id in ids {
+                    let path = match paths_map.get(&id) {
+                        Some(v) => v,
+                        None => continue, // Or: return Err(io::Error::new(io::ErrorKind::InvalidData, "Invalid file requested by client."))
+                    };
+                    // let file_name_len = path.len() as u32;
 
-                    let header = create_header(RequestVersion::ZEROpOne, RequestType::GiveFiles, file_name_len);
+                    let header = create_header(RequestVersion::ZEROpOne, RequestType::GiveFiles, 4);
 
                     stream.write_all(&header).await?;
-                    stream.write_all(file.as_bytes()).await?;
+                    stream.write_u32(id).await?;
 
-                    if let Some(paths_map) = paths_map.as_ref() {
-                        let path = match paths_map.get(file) {
-                            Some(p) => p,
-                            None => return Err(io::Error::new(io::ErrorKind::InvalidData, "Invalid file requested by client.")),
-                        };
-
+                    if cache_on {
                         let mut file_handle = fs::File::open(path).await?;
 
                         loop {
@@ -116,7 +133,7 @@ async fn handle_connection(mut stream: TcpStream, hashes: Arc<Vec<u8>>, paths_ma
                         stream.write_all(&end_header).await?;
 
                     } else {
-                        let mut file_handle = fs::File::open(file).await?;
+                        let mut file_handle = fs::File::open(path).await?;
                         let mut encoder = DeflateEncoder::new(&mut compression_buffer, Compression::fast());
 
                         loop {
