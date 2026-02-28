@@ -14,17 +14,46 @@ use flate2::{Compression, write::DeflateEncoder};
 use crate::cache::*;
 use repairman_common::*;
 
-pub async fn run_server(files: HashMap<u32, HashedFile>, addr: &str, cache: Option<String>) -> std::io::Result<()> {
+pub async fn run_server(base_path: String, files: HashMap<u32, HashedFile>, addr: &str, cache: Option<String>) -> std::io::Result<()> {
     let listener = TcpListener::bind(addr).await?;
 
     // Create the GIVE-HASHES response to reuse, body contains "file_name hash" on sperated lines
-    // let mut body = String::new();
-    let mut body: Vec<u8> = Vec::new();
+    let mut body: Vec<u8> = Vec::with_capacity((70 + 128) * files.len());
     body.extend_from_slice(&(files.len() as u32).to_be_bytes());
 
-    for (id, file) in &files {
-        body.extend_from_slice(&(*id).to_be_bytes());
-        body.extend_from_slice(format!("{}\0{}", file.get_path(), file.get_hash()).as_bytes());
+    if files.len() == 1 {
+        if let Some((id, file)) = files.iter().next() && file.get_path() == base_path {
+            let file_path = match Path::new(&base_path).file_name() {
+                Some(n) => n.to_string_lossy(),
+                None => return Err(io::Error::new(io::ErrorKind::InvalidInput, "Recieved and invalid file path, couldn't extract file name.")),
+            };
+
+            let file_path_len = (file_path.len() as u16).to_be_bytes();
+
+            body.extend_from_slice(&(*id).to_be_bytes());
+            body.extend_from_slice(&file_path_len);
+            body.extend_from_slice(file_path.as_bytes());
+            body.extend_from_slice(file.get_hash().as_bytes());
+        }
+    } else {
+        for (id, file) in &files {
+
+            let componants: Vec<_> = Path::new(file.get_path())
+                .strip_prefix(&base_path)
+                .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?
+                .components()
+                .map(|c| c.as_os_str().to_string_lossy())
+                .collect();
+
+            let file_path = componants.join("/");
+
+            let file_path_len = (file_path.len() as u16).to_be_bytes();
+
+            body.extend_from_slice(&(*id).to_be_bytes());
+            body.extend_from_slice(&file_path_len);
+            body.extend_from_slice(file_path.as_bytes());
+            body.extend_from_slice(file.get_hash().as_bytes());
+        }
     }
 
 
@@ -87,7 +116,12 @@ async fn handle_connection(mut stream: TcpStream, hashes: Arc<Vec<u8>>, cache_on
             },
 
             RequestType::GetFiles => {
-                let mut files = vec![0u8; *request.get_body_size()];
+                let body_size = *request.get_body_size();
+                if body_size > 4 * paths_map.len() {
+                    return Err(io::Error::new(io::ErrorKind::InvalidData, format!("Client requested more IDs, than possible: {}", body_size / 4)));
+                }
+
+                let mut files = vec![0u8; body_size];
                 stream.read_exact(&mut files).await?;
 
                 let ids: Vec<u32> = files.chunks_exact(4).map(|c| {
@@ -97,8 +131,6 @@ async fn handle_connection(mut stream: TcpStream, hashes: Arc<Vec<u8>>, cache_on
                 if !files.chunks_exact(4).remainder().is_empty() {
                     return Err(io::Error::new(io::ErrorKind::InvalidData, "Couldn't convert body to IDs."));
                 }
-
-                dbg!(&ids);
 
 
                 let mut buffer = vec![0u8; 32768];
@@ -110,7 +142,6 @@ async fn handle_connection(mut stream: TcpStream, hashes: Arc<Vec<u8>>, cache_on
                         Some(v) => v,
                         None => continue, // Or: return Err(io::Error::new(io::ErrorKind::InvalidData, "Invalid file requested by client."))
                     };
-                    // let file_name_len = path.len() as u32;
 
                     let header = create_header(RequestVersion::ZEROpOne, RequestType::GiveFiles, 4);
 

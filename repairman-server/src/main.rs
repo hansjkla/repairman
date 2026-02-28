@@ -42,7 +42,7 @@ async fn main() {
         println!("{} {}", *id, file);
     }
 
-    match run_server(list, &format!("{}:{}", args.address, args.port), args.cache).await {
+    match run_server(args.path, list, &format!("{}:{}", args.address, args.port), args.cache).await {
         Ok(_) => (),
         Err(e) => {
             eprintln!("{e}");

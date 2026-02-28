@@ -5,7 +5,7 @@ use std::{
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 
 use tokio::{
-    io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt}, net::*, sync::mpsc, task
+    io::{AsyncReadExt, AsyncWriteExt}, net::*, sync::mpsc, task
 };
 
 
@@ -29,41 +29,52 @@ pub async fn start_communication(server: &str, origin_path: &str) -> std::io::Re
         return Err(io::Error::new(io::ErrorKind::InvalidData, "Response isn't file hashes."));
     }
 
-    let mut file_list: HashMap<u32, HashedFile> = HashMap::new();
+    
     let mut reader = tokio::io::BufReader::new(&mut stream);
-    let mut buffer = Vec::new();
 
     let file_count = reader.read_u32().await?;
+
+    if file_count > 10_000 {
+        let header = create_header(RequestVersion::ZEROpThree, RequestType::Disconnect, 0);
+        stream.write_all(&header).await?;
+        return Err(io::Error::new(io::ErrorKind::InvalidData, format!("Server is trying to send more than 10000 files ({})!", file_count)));
+    }
+
+    let mut file_list: HashMap<u32, HashedFile> = HashMap::with_capacity(file_count as usize);
+
     println!("file_count: {file_count}");
 
     for _ in 0..file_count {
         let id = reader.read_u32().await?;
 
-        buffer.clear();
-        let n = reader.read_until(b'\0', &mut buffer).await?;
+        let file_path_len = reader.read_u16().await?;
 
-        if buffer.last() == Some(&b'\0') {
-            buffer.pop();
-        }
+        let mut buffer = vec![0u8; file_path_len as usize];
+        reader.read_exact(&mut buffer).await?;
 
-
-        let path = match str::from_utf8(&buffer[..(n - 1)]) {
-            Ok(f) => f,
-            Err(err) => {
-                eprintln!("Error passing a file request to the unpacking task: {}", err);
-                continue;
-            },
-        };
+        let path = str::from_utf8(&buffer)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
 
         let mut hash_buffer = vec![0u8; 64];
         reader.read_exact(&mut hash_buffer).await?;
-        let hash = match str::from_utf8(&hash_buffer) {
-            Ok(f) => f,
-            Err(err) => {
-                eprintln!("Error passing a file request to the unpacking task: {}", err);
-                continue;
-            },
-        };
+        let hash = str::from_utf8(&hash_buffer)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+
+
+        let path_as_path = Path::new(path);
+        let mut skip = false;
+
+        for part in path_as_path {
+            if part == ".." {
+                skip = true;
+                break;
+            }
+        }
+
+        if path_as_path.is_absolute() || skip {
+            eprintln!("Skipping suspisous file: {}", path);
+            continue;
+        }
 
         file_list.insert(id, HashedFile::new(path, hash));
     }
@@ -83,6 +94,8 @@ pub async fn start_communication(server: &str, origin_path: &str) -> std::io::Re
         println!(" ");
         
         let to_download_total = request_files(&mut stream, &checked_files).await?;
+
+
 
         if to_download_total == 0 {
             break;
@@ -145,10 +158,6 @@ pub async fn start_communication(server: &str, origin_path: &str) -> std::io::Re
                 continue;
             }
 
-            // let mut file_name_buffer = vec![0u8; *response.get_body_size()];
-
-            // stream.read_exact(&mut file_name_buffer).await?;
-
             let current_id = stream.read_u32().await?;
 
             let file_path = match file_list.get(&current_id) {
@@ -161,11 +170,8 @@ pub async fn start_communication(server: &str, origin_path: &str) -> std::io::Re
 
             let name = Body::StartFile(file_path.get_path().to_string());
 
-            match tx.send(name).await {
-                Ok(_) => (),
-                Err(err) => eprintln!("Error passing a file request to the unpacking task: {}", err),
-            };
-
+            tx.send(name).await
+                .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, format!("Error passing a file request to the unpacking task: {}", err)))?;
 
             loop {
                 let response = async_parse_request(&mut stream).await?;
@@ -174,6 +180,12 @@ pub async fn start_communication(server: &str, origin_path: &str) -> std::io::Re
                     RequestType::EndFile => break,
                     RequestType::Chunk => {
                         let to_read = *response.get_body_size();
+
+                        if to_read > 32768 {
+                            eprintln!("Chunk response size is larger than 32Kb. Skipping, might break this download.");
+                            continue;
+                        }
+
                         let mut buffer = vec![0u8; to_read];
                         stream.read_exact(&mut buffer).await?;
                         let to_send = Body::Content(buffer);
