@@ -1,6 +1,8 @@
 use std::{
-    collections::HashMap, fs::{self, File}, io::{self, Write}, path::Path
+    collections::HashMap,  fs::{self, File}, io::{self, Write}, path::Path
 };
+
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 
@@ -47,12 +49,14 @@ pub async fn start_communication(server: &str, origin_path: &str) -> std::io::Re
         }
 
 
-        let path = match str::from_utf8(&buffer[..(n - 1)]) {
-            Ok(f) => f,
-            Err(err) => {
-                eprintln!("Error passing a file request to the unpacking task: {}", err);
-                continue;
+        let path = match URL_SAFE_NO_PAD.decode(&buffer[..(n - 1)]) {
+            Ok(v) => {
+                match str::from_utf8(&v) {
+                    Ok(v) => v.to_string(),
+                    Err(e) => return Err(io::Error::new(io::ErrorKind::InvalidData, format!("Error getting file path: {e}"))),
+                }
             },
+            Err(e) => return Err(io::Error::new(io::ErrorKind::InvalidData, format!("Error decoding file path: {e}"))),
         };
 
         let mut hash_buffer = vec![0u8; 64];
@@ -65,7 +69,7 @@ pub async fn start_communication(server: &str, origin_path: &str) -> std::io::Re
             },
         };
 
-        file_list.insert(id, HashedFile::new(path, hash));
+        file_list.insert(id, HashedFile::new(path.as_str(), hash));
     }
 
     println!("Stating checking...");

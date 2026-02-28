@@ -83,6 +83,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "base64"
+version = "0.22.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
+
+[[package]]
 name = "bitflags"
 version = "2.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -622,6 +628,7 @@ checksum = "7a2d987857b319362043e95f5353c0535c1f58eec5336fdfcf626430af7def58"
 name = "repairman-client"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "blake2",
  "crc32fast",
  "digest",
@@ -651,6 +658,7 @@ dependencies = [
 name = "repairman-server"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "blake2",
  "clap",
  "crc32fast",

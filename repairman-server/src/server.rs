@@ -2,6 +2,7 @@ use std::{
     collections::HashMap, io::{self, Write}, path::Path, sync::Arc
 };
 
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -18,13 +19,15 @@ pub async fn run_server(files: HashMap<u32, HashedFile>, addr: &str, cache: Opti
     let listener = TcpListener::bind(addr).await?;
 
     // Create the GIVE-HASHES response to reuse, body contains "file_name hash" on sperated lines
-    // let mut body = String::new();
-    let mut body: Vec<u8> = Vec::new();
+    let mut body: Vec<u8> = Vec::with_capacity(files.len() * (69 + 128));
     body.extend_from_slice(&(files.len() as u32).to_be_bytes());
 
     for (id, file) in &files {
         body.extend_from_slice(&(*id).to_be_bytes());
-        body.extend_from_slice(format!("{}\0{}", file.get_path(), file.get_hash()).as_bytes());
+        let file_path_as_b64 = URL_SAFE_NO_PAD.encode(file.get_path().as_bytes());
+        body.extend_from_slice(file_path_as_b64.as_bytes());
+        body.push(b'\0');
+        body.extend_from_slice(file.get_hash().as_bytes());
     }
 
 

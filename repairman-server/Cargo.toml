@@ -17,6 +17,7 @@ crc32fast.workspace = true
 rayon.workspace = true
 tokio.workspace = true
 clap.workspace = true
+base64.workspace = true
 repairman-common.workspace = true
 
 [lints]
