@@ -23,7 +23,9 @@ pub fn par_hash(path: &Path) -> io::Result<HashMap<u32, HashedFile>> {
             let path_str = f.to_str()
                 .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "Invalid UTF-8 path"))?;
 
-            Ok(HashedFile::new(path_str, &result_bytes))
+            let is_empty = f.metadata()?.len() == 0;
+
+            Ok(HashedFile::new(path_str, &result_bytes, is_empty))
     }).collect();
 
     let mut current_id: u32 = 0;

@@ -76,7 +76,7 @@ pub async fn start_communication(server: &str, origin_path: &str) -> std::io::Re
             continue;
         }
 
-        file_list.insert(id, HashedFile::new(path, hash));
+        file_list.insert(id, HashedFile::new(path, hash, false));
     }
 
     println!("Stating checking...");
@@ -151,10 +151,12 @@ pub async fn start_communication(server: &str, origin_path: &str) -> std::io::Re
         });
 
 
+        let origin = origin_path.to_string();
+
         for _ in 0..to_download_total  {
             let response = async_parse_request(&mut stream).await?;
 
-            if response.get_type() != &RequestType::GiveFiles {
+            if response.get_type() != &RequestType::GiveFiles && response.get_type() != &RequestType::EmptyFile {
                 continue;
             }
 
@@ -167,6 +169,16 @@ pub async fn start_communication(server: &str, origin_path: &str) -> std::io::Re
                     continue;
                 },
             };
+
+
+            if response.get_type() == &RequestType::EmptyFile {
+                let path = Path::new(&origin).join(file_path.get_path());
+                if let Some(parent) = path.parent() {
+                    fs::create_dir_all(parent)?;
+                }
+                fs::File::create(path)?;
+                continue;
+            }
 
             let name = Body::StartFile(file_path.get_path().to_string());
 

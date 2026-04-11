@@ -11,7 +11,7 @@ use file_hashing::get_hash_file;
 
 use repairman_common::*;
 
-pub fn parse_cache(path: &Path, files: &HashMap<u32, HashedFile>) -> io::Result<HashMap<u32, String>> {
+pub fn parse_cache(path: &Path, files: &HashMap<u32, HashedFile>) -> io::Result<HashMap<u32, FileToSendInfo>> {
     let inventory_file = path.join(Path::new("inventory.compmeta"));
 
     if !inventory_file.exists() {
@@ -37,7 +37,7 @@ pub fn parse_cache(path: &Path, files: &HashMap<u32, HashedFile>) -> io::Result<
         let compressed_file_hash = segments.next()
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "Unable to trun a compressed file hash into a string."))??;
 
-        inv_map.insert(HashedFile::new(&path, &origin_file_hash), compressed_file_hash);
+        inv_map.insert(HashedFile::new(&path, &origin_file_hash, false), compressed_file_hash);
     }
 
     let mut buffer = vec![0u8; 8192];
@@ -58,9 +58,11 @@ pub fn parse_cache(path: &Path, files: &HashMap<u32, HashedFile>) -> io::Result<
 
         let path_to_cmp = path_to_cmp.to_str().unwrap();
 
-        paths_map.insert(*id, path_to_cmp.to_string());
+        let fileinfo = FileToSendInfo::new(path_to_cmp, file.is_empty());
 
-        let hashedfile_to_cmp = HashedFile::new(path_to_cmp, file.get_hash());
+        paths_map.insert(*id, fileinfo);
+
+        let hashedfile_to_cmp = HashedFile::new(path_to_cmp, file.get_hash(), false);
 
         if let Some((hashedfile, compressed_hash)) = inv_map.get_key_value(&hashedfile_to_cmp) &&
                     hashedfile.get_hash() == file.get_hash() &&
@@ -132,7 +134,7 @@ thread_local! {
     static THEAD_BUFFER: RefCell<Vec<u8>> = RefCell::new(vec![0u8; 8192]);
 }
 
-pub fn create_cache(path: &Path, files: &HashMap<u32, HashedFile>) -> io::Result<HashMap<u32, String>> {
+pub fn create_cache(path: &Path, files: &HashMap<u32, HashedFile>) -> io::Result<HashMap<u32, FileToSendInfo>> {
     fs::create_dir_all(path)?;
 
     let cache_parts: Vec<io::Result<ChachePart>> = files.par_iter().map(|(id, f)| {
@@ -174,7 +176,7 @@ pub fn create_cache(path: &Path, files: &HashMap<u32, HashedFile>) -> io::Result
             None => return Err(io::Error::new(io::ErrorKind::AddrInUse, "")),
         };
 
-        Ok(ChachePart::new(format!("{}\0{}\0{}\0", path, f.get_hash(), compressed_file_hash), *id, path.to_string()))
+        Ok(ChachePart::new(format!("{}\0{}\0{}\0", path, f.get_hash(), compressed_file_hash), *id, path.to_string(), f.is_empty()))
     }).collect();
 
     let mut metadata = String::with_capacity(264 * cache_parts.len());
@@ -183,7 +185,8 @@ pub fn create_cache(path: &Path, files: &HashMap<u32, HashedFile>) -> io::Result
     for part in cache_parts {
         let part = part?;
         metadata.push_str(&part.compmeta_line);
-        paths_map.insert(part.id, part.compressed_path);
+        let fileinfo = FileToSendInfo::new(&part.compressed_path, part.is_empty);
+        paths_map.insert(part.id, fileinfo);
     }
 
     fs::write(path.join(Path::new("inventory.compmeta")), metadata)?;
@@ -195,12 +198,11 @@ struct ChachePart {
     compmeta_line: String,
     id: u32,
     compressed_path: String,
+    is_empty: bool,
 }
 
 impl ChachePart {
-    fn new(compmeta_line: String,
-    id: u32,
-    compressed_path: String,) -> ChachePart {
-        ChachePart { compmeta_line, id, compressed_path }
+    fn new(compmeta_line: String, id: u32, compressed_path: String, is_empty: bool) -> ChachePart {
+        ChachePart { compmeta_line, id, compressed_path, is_empty }
     }
 }
