@@ -9,7 +9,7 @@ use tokio::{
     fs,
 };
 
-use flate2::{Compression, write::DeflateEncoder};
+use zstd::Encoder;
 
 use crate::cache::*;
 use repairman_common::*;
@@ -173,7 +173,7 @@ async fn handle_connection(mut stream: TcpStream, hashes: Arc<Vec<u8>>, cache_on
 
                     } else {
                         let mut file_handle = fs::File::open(fileinfo.get_path()).await?;
-                        let mut encoder = DeflateEncoder::new(&mut compression_buffer, Compression::fast());
+                        let mut encoder = Encoder::new(&mut compression_buffer, 0)?;
 
                         loop {
                             let n = file_handle.read(&mut buffer).await?;

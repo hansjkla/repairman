@@ -3,7 +3,7 @@ use std::path::Path;
 use server::run_server;
 
 use hashed_files::par_hash;
-use clap::{Parser};
+use clap::Parser;
 
 mod hashed_files;
 mod server;

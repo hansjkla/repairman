@@ -12,14 +12,14 @@ use tokio::{
 use blake2::Blake2s256;
 use digest::Digest;
 use file_hashing::get_hash_file;
-use flate2::write::DeflateDecoder;
+use zstd::stream::write::Decoder;
 
 use repairman_common::*;
 
 
-pub async fn start_communication(server: &str, origin_path: &str) -> std::io::Result<()> {
+pub async fn start_communication(server: &str, origin_path: &str, port: u16) -> std::io::Result<()> {
     
-    let mut stream = tokio::net::TcpStream::connect(format!("{server}:6767")).await?;
+    let mut stream = tokio::net::TcpStream::connect(format!("{server}:{port}")).await?;
 
     request_hashes(&mut stream).await?;
 
@@ -114,7 +114,7 @@ pub async fn start_communication(server: &str, origin_path: &str) -> std::io::Re
 
         let unpacker_handle = task::spawn_blocking(move || {
             let result: io::Result<()> = (|| {
-                let mut current_decoder: Option<DeflateDecoder<fs::File>> = None;
+                let mut current_decoder: Option<Decoder<fs::File>> = None;
 
                 while let Some(body) = rx.blocking_recv() {
                     match body {
@@ -126,7 +126,7 @@ pub async fn start_communication(server: &str, origin_path: &str) -> std::io::Re
                             }
 
                             let file = File::create(path)?;
-                            current_decoder = Some(DeflateDecoder::new(file));
+                            current_decoder = Some(Decoder::new(file)?);
                         },
 
                         Body::Content(cont) => {
@@ -136,8 +136,8 @@ pub async fn start_communication(server: &str, origin_path: &str) -> std::io::Re
                         },
 
                         Body::FileDone => {
-                            if let Some(decode) = current_decoder.take() {
-                                decode.finish()?;
+                            if let Some(mut decode) = current_decoder.take() {
+                                decode.flush()?;
                             }
                         },
                     }

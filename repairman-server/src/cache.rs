@@ -4,7 +4,7 @@ use std::{
 
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 
-use flate2::{Compression, write::DeflateEncoder};
+use zstd::stream::write::Encoder;
 use blake2::Blake2s256;
 use digest::Digest;
 use file_hashing::get_hash_file;
@@ -85,7 +85,7 @@ pub fn parse_cache(path: &Path, files: &HashMap<u32, HashedFile>) -> io::Result<
 
             let mut origin_file_handle = fs::File::open(file.get_path())?;
             let compressed_file_handle = fs::File::create(path_to_cmp)?;
-            let mut encoder = DeflateEncoder::new(compressed_file_handle, Compression::fast());
+            let mut encoder = Encoder::new(compressed_file_handle, 7)?;
 
             loop {
                 let n = origin_file_handle.read(&mut buffer)?;
@@ -151,7 +151,7 @@ pub fn create_cache(path: &Path, files: &HashMap<u32, HashedFile>) -> io::Result
         let path = PathBuf::from(os_file_path);
 
         let compressed_file = fs::File::create(&path)?;
-        let mut encoder = DeflateEncoder::new(compressed_file, Compression::fast());
+        let mut encoder = Encoder::new(compressed_file, 7)?;
 
         THEAD_BUFFER.with(|buffer| -> io::Result<()> {
             let mut buffer = buffer.borrow_mut();

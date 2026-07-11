@@ -1,22 +1,25 @@
-use std::env;
+use clap::Parser;
 
 use client::start_communication;
 
 
 mod client;
 
+#[derive(Parser, Debug)]
+#[command(version, about, long_about = None)]
+struct Args {
+    server: String,
+
+    path: String,
+
+    #[arg(short, long, default_value_t = 6767)]
+    port: u16,
+}
+
 #[tokio::main]
 async fn main() {
-    let args: Vec<String> = env::args().collect();
+    let args = Args::parse();
 
-    if args.len() > 3 {
-        eprintln!("Too many arguments passed.");
-        return;
-    } else if args.len() < 3 {
-        eprintln!("Not enough arguments passed.");
-        return;
-    }
-
-    let result = start_communication(&args[1], &args[2]).await;
+    let result = start_communication(&args.server, &args.path, args.port).await;
     result.unwrap_or_else(|err| { eprintln!("{err}") });
 }
